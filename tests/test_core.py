@@ -1,7 +1,7 @@
 """
 Smoke test for booth.check() using a mock call_fn — validates the
 retry/status/error-handling logic in isolation before wiring up a real
-model. Run: python3 tests/test_smoke.py
+model. Run: python3 tests/test_core.py
 """
 
 import json
@@ -70,6 +70,7 @@ def test_uncertain_after_exhausting_retries():
     assert r.n_attempts == 2
     assert r.answer == "possibly Marseille?"
     assert r.ok is False
+    assert r.all_parse_failed is False, "these attempts parsed fine, just low confidence"
     print("PASS: uncertain after exhausting retries")
 
 
@@ -80,6 +81,7 @@ def test_malformed_response_treated_as_low_confidence():
     r = bth.check(call_fn, "Capital of France?", threshold=0.7, max_retries=1)
     assert r.status == bth.UNCERTAIN, r.status
     assert r.answer is None, "answer must be None on total parse failure, not raw model text"
+    assert r.all_parse_failed is True
     print("PASS: malformed response -> uncertain, answer=None, no crash")
 
 
@@ -115,6 +117,7 @@ def test_call_fn_exception_every_attempt_returns_uncertain_not_crash():
     assert r.status == bth.UNCERTAIN, r.status
     assert r.answer is None
     assert all(a.error is not None for a in r.attempts)
+    assert r.all_parse_failed is True
     print("PASS: call_fn fails every attempt -> UNCERTAIN, no crash")
 
 
@@ -291,6 +294,57 @@ def test_ambiguous_overrides_low_confidence_too():
     print("PASS: ambiguity is checked before the confidence gate, even at low confidence")
 
 
+# --- New: parse-failure-specific retry prompt + all_parse_failed ---
+
+def test_parse_failure_retry_prompt_differs_from_confidence_retry_prompt():
+    """A parse failure and a low-confidence answer must not produce the
+    same retry prompt. Previously _next_prompt() sent the exact same
+    prompt on parse failure as attempt 1 — a model with a stable
+    formatting habit (markdown fences, chatty preamble) could burn
+    every retry failing identically, with no signal to correct course."""
+    seen_prompts = []
+
+    def call_fn(prompt):
+        seen_prompts.append(prompt)
+        return "Sure! I think the answer is Paris, but here's no JSON."
+
+    r = bth.check(call_fn, "Capital of France?", threshold=0.7, max_retries=1)
+    assert len(seen_prompts) == 2
+    assert seen_prompts[0] != seen_prompts[1], "retry prompt after parse failure must differ from the original"
+    assert "could not be parsed" in seen_prompts[1]
+    assert r.status == bth.UNCERTAIN
+    assert r.all_parse_failed is True
+    print("PASS: parse-failure retry prompt explicitly names the failure, distinct from confidence retry")
+
+
+def test_parse_failure_then_recovery_still_repairs():
+    """A model that fails to parse on attempt 1 but recovers on attempt
+    2 (after seeing the format-failure prompt) should REPAIR normally —
+    the new prompt path must not break the happy-path recovery case."""
+    seen_prompts = []
+
+    def call_fn(prompt):
+        seen_prompts.append(prompt)
+        if len(seen_prompts) == 1:
+            return "no JSON here, sorry"
+        return json.dumps({"answer": "Paris", "confidence": 0.95})
+
+    r = bth.check(call_fn, "Capital of France?", threshold=0.7, max_retries=1)
+    assert r.status == bth.REPAIRED, r.status
+    assert r.answer == "Paris"
+    assert r.all_parse_failed is False
+    print("PASS: recovery after a parse failure still reports REPAIRED")
+
+
+def test_all_parse_failed_false_when_no_attempts_made():
+    """Edge case: an empty attempts list (not reachable through the
+    public API today, but BoothResult can in principle be constructed
+    directly) must not raise on all_parse_failed."""
+    r = bth.BoothResult(answer=None, status=bth.UNCERTAIN, attempts=[])
+    assert r.all_parse_failed is False
+    print("PASS: all_parse_failed is False (not an error) with an empty attempts list")
+
+
 if __name__ == "__main__":
     test_verified_first_try()
     test_repaired_on_retry()
@@ -312,4 +366,7 @@ if __name__ == "__main__":
     test_unambiguous_question_still_verifies_normally()
     test_ambiguous_field_missing_defaults_to_not_ambiguous()
     test_ambiguous_overrides_low_confidence_too()
+    test_parse_failure_retry_prompt_differs_from_confidence_retry_prompt()
+    test_parse_failure_then_recovery_still_repairs()
+    test_all_parse_failed_false_when_no_attempts_made()
     print("\nAll smoke tests passed.")

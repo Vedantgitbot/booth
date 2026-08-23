@@ -77,6 +77,21 @@ class BoothResult:
         caller to decide how to handle the ambiguity."""
         return self.status in (VERIFIED, REPAIRED)
 
+    @property
+    def all_parse_failed(self) -> bool:
+        """True if every attempt failed to parse into the expected
+        schema — i.e. UNCERTAIN was reached because the model never
+        produced usable output, not because it reported low
+        confidence. This distinction matters operationally: a caller
+        seeing UNCERTAIN because of low confidence might reasonably
+        retry at a lower threshold or accept the answer with a
+        caveat, but that response makes no sense here — there is no
+        answer to fall back on. A caller in this state more likely
+        needs to relax its format instructions, check that call_fn is
+        wired up correctly, or try a different model. Undefined
+        (False) if there were no attempts at all."""
+        return bool(self.attempts) and all(not a.parse_ok for a in self.attempts)
+
 
 def _build_prompt(user_prompt: str) -> str:
     return user_prompt.rstrip() + _CONFIDENCE_SUFFIX
@@ -94,6 +109,30 @@ def _build_retry_prompt(original_prompt: str, previous: Attempt) -> str:
         f"with confidence {previous.confidence}.\n"
         f"Reconsider carefully. If that answer is correct, restate it. "
         f"If it is wrong, give the corrected answer."
+        f"{_CONFIDENCE_SUFFIX}"
+    )
+
+
+def _build_parse_failure_prompt(original_prompt: str, previous: Attempt) -> str:
+    """Used when the previous attempt's raw text could not be parsed
+    into the expected schema (missing/invalid keys, no JSON found at
+    all, etc). Deliberately distinct from _build_retry_prompt: there
+    is no previous answer/confidence worth showing the model back, so
+    instead of silently repeating the original prompt — which gives a
+    model with a stable formatting habit (markdown fences, a chatty
+    preamble, ignoring "output ONLY JSON") no reason to change it —
+    this explicitly names the failure and restates the format
+    contract. Without this, a model with a consistent formatting quirk
+    can burn every retry attempt failing the same way for the same
+    reason, and the caller only ever sees a generic UNCERTAIN with no
+    hint that parsing, not confidence, was the actual problem."""
+    return (
+        f"{original_prompt.rstrip()}\n\n"
+        f"Your previous response could not be parsed: it did not "
+        f"contain a valid JSON object with the required keys. Output "
+        f"your response as a single JSON object with exactly the "
+        f"required keys, and nothing else — no markdown code fences, "
+        f"no commentary before or after it."
         f"{_CONFIDENCE_SUFFIX}"
     )
 
@@ -184,7 +223,10 @@ def _evaluate(
     if attempt.parse_ok and attempt.ambiguous:
         # Ambiguity is a property of the question, not something a
         # reconsideration retry resolves — return immediately,
-        # regardless of confidence.
+        # regardless of confidence. This applies on any attempt, not
+        # just the first: if a reconsideration retry causes the model
+        # to newly recognize ambiguity it missed the first time, that
+        # is still ambiguity, and still short-circuits.
         return BoothResult(
             answer=attempt.answer,
             status=AMBIGUOUS,
@@ -207,10 +249,16 @@ def _evaluate(
 
 
 def _next_prompt(original_prompt: str, attempt: Attempt) -> str:
-    """Prompt to use for the next attempt, if any retries remain."""
+    """Prompt to use for the next attempt, if any retries remain.
+    Two distinct retry paths, not one: a parsed-but-low-confidence
+    attempt gets the reconsideration prompt (show it its own prior
+    answer, ask it to double-check); an unparseable attempt gets the
+    format-failure prompt instead (there is no prior answer worth
+    showing back, and repeating the original prompt unchanged gives a
+    model with a stable formatting quirk no reason to correct it)."""
     if attempt.parse_ok:
         return _build_retry_prompt(original_prompt, attempt)
-    return _build_prompt(original_prompt)
+    return _build_parse_failure_prompt(original_prompt, attempt)
 
 
 def _finalize_uncertain(attempts: List[Attempt]) -> BoothResult:
@@ -256,8 +304,8 @@ def check(
         accept an unambiguous answer without retrying.
 
     max_retries: number of retries AFTER the first attempt, for
-        low-confidence (non-ambiguous) answers. E.g. max_retries=1
-        means up to 2 total calls to call_fn.
+        low-confidence (non-ambiguous) or unparseable answers. E.g.
+        max_retries=1 means up to 2 total calls to call_fn.
 
     on_attempt: optional synchronous callback invoked as
         on_attempt(index, attempt) after every attempt (including
@@ -292,6 +340,9 @@ def check(
         result.ok                — True only for VERIFIED/REPAIRED.
         result.ambiguous         — True if AMBIGUOUS.
         result.interpretations   — list of readings, if ambiguous.
+        result.all_parse_failed  — True if UNCERTAIN was reached
+                                    because every attempt failed to
+                                    parse, as opposed to low confidence.
     """
     _validate_args(threshold, max_retries)
     if on_attempt is not None and inspect.iscoroutinefunction(on_attempt):

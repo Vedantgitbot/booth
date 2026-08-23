@@ -93,6 +93,7 @@ def test_acheck_uncertain_after_exhausting_retries():
     assert r.n_attempts == 2
     assert r.answer == "possibly Marseille?"
     assert r.ok is False
+    assert r.all_parse_failed is False
     print("PASS: acheck uncertain after exhausting retries")
 
 
@@ -106,6 +107,7 @@ def test_acheck_malformed_response_does_not_crash():
     r = run(go())
     assert r.status == bth.UNCERTAIN, r.status
     assert r.answer is None, "answer must be None on total parse failure, not raw model text"
+    assert r.all_parse_failed is True
     print("PASS: acheck malformed response -> uncertain, answer=None, no crash")
 
 
@@ -156,6 +158,7 @@ def test_acheck_call_fn_exception_every_attempt_returns_uncertain_not_crash():
     assert r.status == bth.UNCERTAIN, r.status
     assert r.answer is None
     assert all(a.error is not None for a in r.attempts)
+    assert r.all_parse_failed is True
     print("PASS: acheck call_fn fails every attempt -> UNCERTAIN, no crash")
 
 
@@ -276,6 +279,49 @@ def test_acheck_concurrent_calls_are_independent():
     print(f"PASS: {N} concurrent acheck() calls returned independent, uncontaminated results")
 
 
+# --- New: parse-failure-specific retry prompt (async path) ---
+
+def test_acheck_parse_failure_retry_prompt_differs_from_confidence_retry_prompt():
+    """Async twin of the equivalent sync test: acheck() must route
+    through the same _next_prompt() logic, so a parse failure must not
+    produce the same retry prompt as the original attempt."""
+    seen_prompts = []
+
+    async def call_fn(prompt):
+        seen_prompts.append(prompt)
+        return "Sure! I think the answer is Paris, but here's no JSON."
+
+    async def go():
+        return await bth.acheck(call_fn, "Capital of France?", threshold=0.7, max_retries=1)
+
+    r = run(go())
+    assert len(seen_prompts) == 2
+    assert seen_prompts[0] != seen_prompts[1], "retry prompt after parse failure must differ from the original"
+    assert "could not be parsed" in seen_prompts[1]
+    assert r.status == bth.UNCERTAIN
+    assert r.all_parse_failed is True
+    print("PASS: acheck parse-failure retry prompt explicitly names the failure")
+
+
+def test_acheck_parse_failure_then_recovery_still_repairs():
+    seen_prompts = []
+
+    async def call_fn(prompt):
+        seen_prompts.append(prompt)
+        if len(seen_prompts) == 1:
+            return "no JSON here, sorry"
+        return json.dumps({"answer": "Paris", "confidence": 0.95})
+
+    async def go():
+        return await bth.acheck(call_fn, "Capital of France?", threshold=0.7, max_retries=1)
+
+    r = run(go())
+    assert r.status == bth.REPAIRED, r.status
+    assert r.answer == "Paris"
+    assert r.all_parse_failed is False
+    print("PASS: acheck recovery after a parse failure still reports REPAIRED")
+
+
 if __name__ == "__main__":
     test_acheck_verified_first_try()
     test_acheck_repaired_on_retry()
@@ -291,4 +337,6 @@ if __name__ == "__main__":
     test_check_rejects_async_on_attempt()
     test_check_and_acheck_agree_on_same_inputs()
     test_acheck_concurrent_calls_are_independent()
+    test_acheck_parse_failure_retry_prompt_differs_from_confidence_retry_prompt()
+    test_acheck_parse_failure_then_recovery_still_repairs()
     print("\nAll acheck smoke tests passed.")

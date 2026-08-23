@@ -7,7 +7,7 @@ This walks through everything in BOOTH's public API, then shows how to wire it i
 ## 1. Install
 
 ```bash
-pip install git+https://github.com/Vedantgitbot/booth.git
+pip install boothpy
 ```
 
 or, for local development against a cloned copy:
@@ -22,12 +22,12 @@ Confirm it's there:
 
 ```python
 import booth
-print(booth.__version__)   # 0.2.0
+print(booth.__version__)   # 0.3.1
 ```
 
 ---
 
-## 2. The one function you need: `booth.check()`
+## 2. The core function: `booth.check()`
 
 ```python
 def check(
@@ -40,7 +40,7 @@ def check(
     ...
 ```
 
-That's the entire surface area of BOOTH v0.2.0. Everything else in this tutorial is either an argument to this function or a field on what it returns.
+That's the whole surface area for synchronous use. There's also an async twin, `booth.acheck()`, covered in section 7 — everything below about `threshold`, `max_retries`, `on_attempt`, and the result object applies identically to both.
 
 ### `call_fn` — the thing BOOTH wraps
 
@@ -48,7 +48,6 @@ This is **your** function, not BOOTH's. BOOTH doesn't know about OpenAI, Anthrop
 
 ```python
 def call_fn(prompt: str) -> str:
-    # do whatever you'd normally do to call your model
     response = some_client.chat.completions.create(
         model="...",
         messages=[{"role": "user", "content": prompt}],
@@ -58,11 +57,11 @@ def call_fn(prompt: str) -> str:
 
 **Why a plain function instead of a client object?** Because it keeps BOOTH provider-agnostic. Whatever quirks your provider's SDK has (message format, auth, streaming, etc.) live entirely inside `call_fn` — BOOTH never needs to know about them. It just needs "string in, string out."
 
-**Important:** `call_fn` will be called **more than once** if the first attempt is low-confidence or errors out (up to `max_retries + 1` times total). BOOTH appends its own confidence/ambiguity-reporting instructions to whatever prompt it passes to `call_fn` — you don't need to (and shouldn't) build that JSON-format instruction yourself.
+**Important:** `call_fn` will be called **more than once** if the first attempt is low-confidence, unparseable, or errors out (up to `max_retries + 1` times total). BOOTH appends its own confidence/ambiguity-reporting instructions to whatever prompt it passes to `call_fn` — you don't need to (and shouldn't) build that JSON-format instruction yourself.
 
 ### `prompt` — your actual question
 
-Just the plain text of what you want answered. BOOTH internally appends formatting instructions before calling `call_fn` — you write this exactly like you would for a normal, unwrapped LLM call.
+Just the plain text of what you want answered. BOOTH internally appends formatting instructions before calling `call_fn`.
 
 ```python
 result = booth.check(call_fn, "What is the capital of France?")
@@ -84,10 +83,12 @@ result = booth.check(call_fn, prompt, threshold=0.5)   # more lenient
 Number of retries **after** the first attempt.
 
 - `max_retries=0` → exactly 1 call to `call_fn`, no retry, ever.
-- `max_retries=1` (default) → up to 2 calls: the original, plus one reconsideration if the first was low-confidence.
+- `max_retries=1` (default) → up to 2 calls.
 - `max_retries=2` → up to 3 calls.
 
-Retries are **not** blind resampling. On retry, BOOTH builds a new prompt that shows the model its own previous answer and confidence, and explicitly asks it to reconsider:
+There are actually **two different retry prompts**, depending on what went wrong on the previous attempt:
+
+**If the previous attempt parsed but was low-confidence**, BOOTH shows the model its own previous answer and confidence, and asks it to reconsider:
 
 ```text
 On a previous attempt you answered: "Lyon" with confidence 0.3.
@@ -95,7 +96,16 @@ Reconsider carefully. If that answer is correct, restate it.
 If it is wrong, give the corrected answer.
 ```
 
-This gives the model a real chance to catch its own mistake, rather than just re-rolling the dice on the same question with no memory of the last attempt.
+**If the previous attempt didn't parse at all** (no valid JSON, missing keys, out-of-range confidence), there's nothing meaningful to show the model back — instead, BOOTH tells it plainly that its last output didn't parse and restates the format contract:
+
+```text
+Your previous response could not be parsed: it did not contain a
+valid JSON object with the required keys. Output your response as
+a single JSON object with exactly the required keys, and nothing
+else — no markdown code fences, no commentary before or after it.
+```
+
+This distinction matters in practice: without it, a model with a stable formatting habit (always wraps JSON in markdown fences, always adds a chatty preamble) would fail the same way on every single retry, burning your whole `max_retries` budget for nothing, with no signal telling it to change behavior.
 
 **Ambiguous questions are never retried**, regardless of `max_retries`. If a question is genuinely ambiguous as asked, asking the model to "reconsider" doesn't resolve the ambiguity — BOOTH returns `AMBIGUOUS` immediately on the attempt that flags it.
 
@@ -105,12 +115,14 @@ An optional callback, called after *every* attempt (successful, low-confidence, 
 
 ```python
 def log_it(index: int, attempt: booth.Attempt):
-    print(f"attempt {index}: confidence={attempt.confidence}, ambiguous={attempt.ambiguous}")
+    print(f"attempt {index}: confidence={attempt.confidence}, ambiguous={attempt.ambiguous}, parse_ok={attempt.parse_ok}")
 
 result = booth.check(call_fn, prompt, on_attempt=log_it)
 ```
 
 This is how you build the calibration dataset mentioned above — log every attempt to a file or database, and later cross-reference `attempt.confidence` against whether the answer was actually correct, to find out if your chosen `threshold` is doing anything meaningful for your model.
+
+For `check()`, `on_attempt` must be a plain synchronous function — passing a coroutine function (`async def`) raises `TypeError` immediately, since `check()` has no way to await it. Use `acheck()` if you need an async callback (see section 7).
 
 ---
 
@@ -123,13 +135,31 @@ result = booth.check(call_fn, "What is the capital of France?")
 | Field | Type | Meaning |
 |---|---|---|
 | `result.answer` | `str \| None` | The answer text. `None` only if every attempt failed to parse or errored. |
-| `result.status` | `str` | One of `VERIFIED`, `REPAIRED`, `AMBIGUOUS`, `UNCERTAIN`, `BLOCKED` (see below). |
+| `result.status` | `str` | One of `VERIFIED`, `REPAIRED`, `AMBIGUOUS`, `UNCERTAIN`, `BLOCKED`. |
 | `result.confidence` | `float \| None` | The confidence of whichever attempt produced the final answer. |
 | `result.attempts` | `list[Attempt]` | Every attempt made, in order — useful for debugging and logging. |
 | `result.n_attempts` | `int` | `len(result.attempts)`, as a convenience property. |
 | `result.ok` | `bool` | `True` only for `VERIFIED`/`REPAIRED`. Use this as your quick "is it safe to show" check. |
 | `result.ambiguous` | `bool` | `True` only when `status == AMBIGUOUS`. |
 | `result.interpretations` | `list[str]` | The different valid readings the model identified, when ambiguous. Empty otherwise. |
+| `result.all_parse_failed` | `bool` | `True` only if `status == UNCERTAIN` **and** every single attempt failed to parse. See below for why this is worth checking separately. |
+
+### Why `all_parse_failed` exists
+
+`UNCERTAIN` is overloaded — it covers two operationally different situations:
+
+1. The model produced usable answers every time, but confidence never reached your threshold. This is a genuine "the model isn't sure" outcome.
+2. The model's output never parsed into the expected schema at all — wrong format, missing keys, garbage text. This usually isn't about the model's certainty; it's a format/integration problem (bad `call_fn` wiring, a model that ignores instructions, or a model that isn't good at structured output).
+
+These call for different fixes: (1) might mean lowering your threshold, trying a different model, or accepting the answer with a caveat; (2) means checking your `call_fn`, your prompt, or trying a model better at following format instructions. `result.all_parse_failed` tells you which one you're looking at without manually inspecting `result.attempts`.
+
+```python
+if result.status == booth.UNCERTAIN:
+    if result.all_parse_failed:
+        print("Nothing ever parsed — check call_fn / prompt formatting.")
+    else:
+        print("Model tried, but never reached the confidence threshold.")
+```
 
 ### The five statuses, and what to actually do with each
 
@@ -142,13 +172,14 @@ if result.status == booth.VERIFIED:
 
 elif result.status == booth.REPAIRED:
     # Model reconsidered and fixed a shaky first answer. Show it —
-    # but if you're logging for calibration, note this cost 2 calls.
+    # but if you're logging for calibration, note this cost 2+ calls.
     show(result.answer)
 
 elif result.status == booth.AMBIGUOUS:
-    # The question itself has more than one valid reading.
-    # Don't just show result.answer as a settled fact — either ask
-    # the user to disambiguate, or show all readings explicitly.
+    # The question itself has more than one valid reading — or the
+    # model is uncertain about a fact and hedging between two similar
+    # wrong answers, which currently looks identical from the outside.
+    # Don't just show result.answer as a settled fact.
     show(f"This could mean a few things: {result.interpretations}")
 
 elif result.status == booth.UNCERTAIN:
@@ -158,8 +189,7 @@ elif result.status == booth.UNCERTAIN:
 
 elif result.status == booth.BLOCKED:
     # Not reachable in the current Path B implementation — reserved
-    # for when Path A (evidence-based checking) ships. Included here
-    # so your code doesn't need special-casing later.
+    # for when Path A (evidence-based checking) ships.
     pass
 ```
 
@@ -189,7 +219,7 @@ class Attempt:
     chosen_interpretation: Optional[str] = None
 ```
 
-Useful when something looks wrong and you want to see exactly what the model said on each try, not just the final answer:
+Useful when something looks wrong and you want to see exactly what the model said on each try:
 
 ```python
 for i, attempt in enumerate(result.attempts):
@@ -238,7 +268,7 @@ print(ask("What is the capital of Georgia?"))
 print(ask("Who discovered the exact chemical structure of phlogiston in 1847?"))
 ```
 
-Run it — the three questions above should reliably demonstrate `VERIFIED`, `AMBIGUOUS`, and `UNCERTAIN` respectively, since they're the same categories tested during development. See `examples/app.py` for the same logic wired into a NiceGUI chat interface with status badges.
+Run it — the three questions above should reliably demonstrate `VERIFIED`, `AMBIGUOUS`, and `UNCERTAIN` respectively. See `examples/app.py` for the same logic wired into a NiceGUI chat interface with status badges.
 
 ---
 
@@ -284,7 +314,7 @@ with open("calibration.csv", "w", newline="") as f:
     writer.writerows(rows)
 ```
 
-Open `calibration.csv`, bucket by confidence, and check: does accuracy actually go up as confidence goes up, for your model? That answer — not a number I write in a README — is what should set your real `threshold`.
+Open `calibration.csv`, bucket by confidence, and check: does accuracy actually go up as confidence goes up, for your model? That answer — not a number in this doc — is what should set your real `threshold`.
 
 ---
 
@@ -292,5 +322,60 @@ Open `calibration.csv`, bucket by confidence, and check: does accuracy actually 
 
 - **`VERIFIED` is not proof.** A model that is confidently wrong about something unambiguous will pass with `VERIFIED`. Path B has no independent evidence source to catch that class of error.
 - **`AMBIGUOUS` catches structural ambiguity reliably** (shared names, competing metrics) but is **weaker on convention-based ambiguity** that requires domain knowledge to recognize as a split at all.
+- **`AMBIGUOUS` can also fire on a fabricated premise, not just a genuinely contested question.** If a model doesn't actually know the answer to something (a specific real-world fact, a recent event), it can generate two similarly-worded "interpretations" around its own uncertainty rather than a real reading split. From the outside this looks identical to genuine ambiguity. Treat `AMBIGUOUS` results about specific factual claims with extra scrutiny — this is an observed behavior, not a hypothetical edge case.
 - **Confidence is self-reported, not calibrated.** Don't assume a model saying `0.9` means "90% likely correct" without checking against real data for that model.
 - **Every check costs at least one extra LLM call** versus an unwrapped request, and up to `max_retries + 1` calls in the worst case. Factor that into cost/latency budgets before wiring BOOTH into every request in a high-traffic app.
+- **BOOTH only checks a model's self-assessment of itself.** It is not evidence-based verification. If you need "does this answer actually match an external source," that's the planned Path A, not something Path B does — see the README's Path A section for exactly what that will and won't cover once it exists.
+
+---
+
+## 7. Async: `booth.acheck()`
+
+If your app is already async (FastAPI, Starlette, an async model client), use `booth.acheck()` instead of running `check()` in a thread pool. It has an identical contract — same `threshold`/`max_retries`/`on_attempt` parameters, same `BoothResult` shape, same retry and ambiguity logic (both functions are driven by the same internal decision step) — the only difference is `call_fn` must be an `async def`.
+
+```python
+import asyncio
+import booth
+
+async def call_fn(prompt: str) -> str:
+    response = await async_client.chat.completions.create(
+        model="...",
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return response.choices[0].message.content
+
+async def ask(prompt: str) -> str:
+    result = await booth.acheck(call_fn, prompt, threshold=0.7, max_retries=1)
+    if result.ok:
+        return result.answer
+    return "I'm not confident enough in an answer to that."
+
+asyncio.run(ask("What is the capital of France?"))
+```
+
+**Passing a sync `call_fn` to `acheck()` raises `TypeError` immediately** rather than silently misbehaving — same for passing a sync `check()` an async `on_attempt`. If you get one of these errors, you're using the wrong entry point for your function.
+
+**`on_attempt` for `acheck()`** may be either sync or async — `acheck()` only awaits it if it's a coroutine function, so an existing sync logging callback works unchanged:
+
+```python
+async def on_attempt(i, attempt):
+    await db.log(i, attempt.confidence, attempt.ambiguous)
+
+result = await booth.acheck(call_fn, prompt, on_attempt=on_attempt)
+```
+
+**Concurrency:** both `check()` and `acheck()` hold no shared or module-level mutable state, so many simultaneous `acheck()` calls (e.g. one per incoming request) don't interfere with each other. What limits you under load is your model provider's rate limits and how your own `call_fn` handles concurrent calls — not anything inside BOOTH.
+
+If you're in an async app but your model client is sync-only, don't call `check()` directly inside an `async def` — it blocks the event loop for the duration of every `call_fn` call. Run it in a thread pool:
+
+```python
+from concurrent.futures import ThreadPoolExecutor
+import functools
+
+executor = ThreadPoolExecutor(max_workers=20)
+
+async def handler():
+    loop = asyncio.get_event_loop()
+    fn = functools.partial(booth.check, call_fn, prompt, threshold=0.8)
+    result = await loop.run_in_executor(executor, fn)
+```
