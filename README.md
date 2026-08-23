@@ -113,22 +113,16 @@ The application gets a structured result instead of having to implement the retr
 ---
 
 ## Installation
+BOOTH is available on PyPI.
 
-Not yet published to PyPI. Install directly from GitHub:
+Install the latest release with:
 
 ```bash
+pip install boothpy
+
+Or install directly from GitHub:
+
 pip install git+https://github.com/Vedantgitbot/booth.git
-```
-
-Or clone and install locally (editable, so local edits take effect immediately):
-
-```bash
-git clone https://github.com/Vedantgitbot/booth.git
-cd booth
-pip install -e .
-```
-
----
 
 ## Basic Usage
 
@@ -255,6 +249,25 @@ Therefore:
 > **AMBIGUOUS means "the model recognized more than one valid reading," not "BOOTH has enumerated every possible reading."**
 
 This distinction is fundamental to the project.
+
+## Disclaimer
+
+BOOTH is provided for informational and software-development purposes and is provided
+"as is", without warranties of any kind. BOOTH does not guarantee factual correctness,
+safety, completeness, reliability, or suitability for any particular purpose.
+
+In particular, `VERIFIED` does not mean that an answer has been independently proven
+correct. In the current Path B implementation, acceptance is based on the model's
+self-reported ambiguity and confidence. Users are responsible for independently
+testing and validating BOOTH and any outputs produced through it before relying on
+them, especially in production, safety-critical, financial, medical, legal, or other
+high-consequence applications.
+
+The authors and contributors are not responsible for claims, decisions, damages,
+data loss, or other consequences resulting from the use or misuse of BOOTH, to the
+extent permitted by applicable law.
+
+See the MIT License for the applicable warranty and liability terms.
 
 ---
 
