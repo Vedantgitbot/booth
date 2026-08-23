@@ -3,8 +3,8 @@ requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "booth"
-version = "0.1.0"
+name = "boothpy"
+version = "0.2.0"
 description = "A lightweight checkpoint layer for LLM outputs — Path B: self-reported confidence with reconsideration retries."
 readme = "README.md"
 requires-python = ">=3.9"
