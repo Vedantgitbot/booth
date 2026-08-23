@@ -1,9 +1,8 @@
-
-
 from booth.core import (
     Attempt,
     BoothResult,
     check,
+    acheck,
     VERIFIED,
     REPAIRED,
     AMBIGUOUS,
@@ -13,12 +12,13 @@ from booth.core import (
     DEFAULT_MAX_RETRIES,
 )
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "Attempt",
     "BoothResult",
     "check",
+    "acheck",
     "VERIFIED",
     "REPAIRED",
     "AMBIGUOUS",

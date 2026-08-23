@@ -14,7 +14,7 @@ BOOTH follows the same idea for LLM outputs.
 
 ## Current Status
 
-**v0.2.0 — Path B only**
+**v0.3.0 — Path B only**
 
 The current implementation handles a bare LLM call:
 
@@ -41,6 +41,8 @@ ambiguous == true?
 ```
 
 There is currently **no RAG, tool invocation, or independent evidence checking** in Path B.
+
+As of v0.3.0, this logic is available in both a synchronous form (`booth.check`) and an async form (`booth.acheck`) — see [Sync vs. Async](#sync-vs-async) below. Both are driven by the exact same decision logic internally, so they behave identically given equivalent model responses.
 
 ---
 
@@ -119,10 +121,13 @@ Install the latest release with:
 
 ```bash
 pip install boothpy
+```
 
 Or install directly from GitHub:
 
+```bash
 pip install git+https://github.com/Vedantgitbot/booth.git
+```
 
 ## Basic Usage
 
@@ -150,6 +155,54 @@ else:
 ```
 
 BOOTH does not require a specific LLM provider. Your `call_fn` can be backed by OpenAI, Anthropic, Groq, Gemini, a local model, or another system. See `examples/ai.py` for a full working example against the Groq API.
+
+---
+
+## Sync vs. Async
+
+BOOTH ships two entry points with identical behavior — same acceptance condition, same retry/ambiguity logic, same `Attempt`/`BoothResult` shapes:
+
+| | `booth.check()` | `booth.acheck()` |
+|---|---|---|
+| `call_fn` signature | `Callable[[str], str]` (sync) | `Callable[[str], Awaitable[str]]` (async — `async def ... -> str`) |
+| Use when | Scripts, sync codebases, or already running inside a thread/executor | Async web apps (FastAPI, Starlette, async Django) calling an async model client directly |
+
+Passing a sync function to `acheck()` (or an async one to `check()`'s `on_attempt`) raises `TypeError` immediately rather than misbehaving silently.
+
+```python
+import asyncio
+import booth
+
+async def call_llm(prompt: str) -> str:
+    response = await async_client.chat.completions.create(...)
+    return response.choices[0].message.content
+
+async def main():
+    result = await booth.acheck(call_llm, "What is the capital of France?")
+    if result.ok:
+        print(result.answer)
+
+asyncio.run(main())
+```
+
+**Calling `check()` from async code:** `check()` is fully synchronous — calling it directly inside an `async def` route blocks the event loop for the duration of every `call_fn` call. If your model client is sync-only but you're in an async app, run `check()` in a thread pool instead of blocking:
+
+```python
+from concurrent.futures import ThreadPoolExecutor
+import asyncio, functools
+import booth
+
+executor = ThreadPoolExecutor(max_workers=20)
+
+async def handler():
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(executor, booth.check, call_llm, prompt)
+    # with extra kwargs (threshold, max_retries, ...), wrap in functools.partial first:
+    fn = functools.partial(booth.check, call_llm, prompt, threshold=0.8)
+    result = await loop.run_in_executor(executor, fn)
+```
+
+**Concurrency note:** both `check()` and `acheck()` are stateless — no module-level mutable state, no shared caching — so concurrent calls (many simultaneous users) don't interfere with each other regardless of which entry point you use. What determines whether your application holds up under concurrent load is `call_fn` itself (is your model client safe to call concurrently? are you within provider rate limits?) and how your server schedules work, not BOOTH's internals.
 
 ---
 
@@ -248,7 +301,7 @@ Therefore:
 >
 > **AMBIGUOUS means "the model recognized more than one valid reading," not "BOOTH has enumerated every possible reading."**
 
-This distinction is fundamental to the project.
+This distinction is fundamental to the project. It applies equally to `check()` and `acheck()` — the async entry point does not add any independent evidence checking; it only changes how `call_fn` is invoked.
 
 ## Disclaimer
 
@@ -295,7 +348,17 @@ booth.check(
 )
 ```
 
-**`call_fn`** — `Callable[[str], str]`. Receives a prompt, returns the model's raw response. BOOTH does not manage your model provider or API credentials.
+```python
+await booth.acheck(
+    call_fn,        # async def call_fn(prompt: str) -> str
+    prompt,
+    threshold=0.7,
+    max_retries=1,
+    on_attempt=None,  # may be sync or async
+)
+```
+
+**`call_fn`** — for `check()`: `Callable[[str], str]`. For `acheck()`: `Callable[[str], Awaitable[str]]` (`async def`). Receives a prompt, returns the model's raw response. BOOTH does not manage your model provider or API credentials. Exceptions raised by `call_fn` (network errors, rate limits, timeouts) are caught per-attempt and recorded as a failed `Attempt` — they never propagate out of `check()`/`acheck()`.
 
 **`prompt`** — the original user/application prompt. BOOTH appends its confidence/ambiguity-reporting instructions internally.
 
@@ -303,7 +366,7 @@ booth.check(
 
 **`max_retries`** — number of reconsideration attempts after the initial call, for low-confidence *unambiguous* answers. `max_retries=0` means one total call; `max_retries=2` allows up to three.
 
-**`on_attempt`** — optional `Callable[[int, Attempt], Any]`, invoked after every attempt (including failed/unparseable ones), for logging, debugging, and calibration.
+**`on_attempt`** — optional callback invoked after every attempt (including failed/unparseable ones), for logging, debugging, and calibration. For `check()`: must be a synchronous `Callable[[int, Attempt], Any]` — passing a coroutine function raises `TypeError`. For `acheck()`: may be either sync or async (`acheck()` awaits it only if it's a coroutine function).
 
 ---
 
@@ -319,6 +382,8 @@ result.ok                # bool — True only for VERIFIED / REPAIRED
 result.ambiguous         # bool
 result.interpretations   # list[str] — populated only when ambiguous
 ```
+
+Identical whether the result came from `check()` or `acheck()`.
 
 ```python
 if result.status == booth.AMBIGUOUS:
@@ -353,7 +418,7 @@ In future evidence-based paths, the condition can become stronger: does the answ
 3. **Ask "is this even answerable as asked" before "how confident are you."** Field order in the schema forces this sequencing, not just the prompt wording.
 4. **Don't pretend confidence is proof.** Self-reported confidence and self-reported ambiguity are useful signals, not independent evidence.
 5. **Stay provider-agnostic.** BOOTH works above different LLM providers rather than locking applications to one API.
-6. **Keep the core API small.** A checkpoint layer, not another full LLM framework.
+6. **Keep the core API small.** A checkpoint layer, not another full LLM framework. `check()` and `acheck()` share one internal decision function so the sync/async split doesn't grow into two diverging implementations.
 
 ---
 
@@ -368,6 +433,7 @@ BOOTH Path B does **not** currently:
 - provide calibrated confidence probabilities (self-reported confidence is a signal, not a calibrated statistic — validate against your own data before trusting a threshold)
 - reliably catch **convention-based** ambiguity that requires specific domain knowledge to recognize as a split (e.g. bestseller-list conventions excluding religious texts) — it is meaningfully better than no check, tested and confirmed working on **structural** ambiguity (shared names, competing metrics), but is not exhaustive
 - replace application-specific safety or validation logic
+- retry with backoff on rate-limit/network errors — a failed `call_fn` attempt is recorded and the loop moves on (to a reconsideration retry, if any remain, or to `UNCERTAIN`); there is currently no separate network-level retry/backoff policy
 
 Those may be addressed by future paths or integrations.
 
@@ -390,7 +456,8 @@ booth/
 │   ├── ai.py
 │   └── app.py
 └── tests/
-    └── test_core.py
+    ├── test_smoke.py
+    └── test_acheck.py
 ```
 
 ```bash

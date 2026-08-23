@@ -1,8 +1,8 @@
-
+import inspect
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any, Callable, List, Optional
+from typing import Any, Awaitable, Callable, List, Optional, Union
 
 VERIFIED = "VERIFIED"
 REPAIRED = "REPAIRED"
@@ -164,6 +164,72 @@ def _parse_response(raw_text: str) -> Attempt:
     return Attempt(raw_text=raw_text, answer=None, confidence=None, parse_ok=False)
 
 
+def _evaluate(
+    attempts: List[Attempt],
+    attempt: Attempt,
+    attempt_index: int,
+    threshold: float,
+) -> Optional[BoothResult]:
+    """Shared decision step, called identically from check() and
+    acheck() after every attempt. Returns a BoothResult if the loop
+    should stop here (ambiguous, or confidence cleared the threshold),
+    or None if the caller should proceed to the next attempt (or, if
+    out of attempts, to _finalize_uncertain).
+
+    This is the ONLY place the ambiguous-check / threshold-check /
+    VERIFIED-vs-REPAIRED decision lives. check() and acheck() both
+    defer to it instead of re-implementing the logic, so a future fix
+    here can't be applied to one loop and forgotten in the other.
+    """
+    if attempt.parse_ok and attempt.ambiguous:
+        # Ambiguity is a property of the question, not something a
+        # reconsideration retry resolves — return immediately,
+        # regardless of confidence.
+        return BoothResult(
+            answer=attempt.answer,
+            status=AMBIGUOUS,
+            confidence=attempt.confidence,
+            attempts=attempts,
+            ambiguous=True,
+            interpretations=attempt.interpretations,
+        )
+
+    if attempt.parse_ok and attempt.confidence >= threshold:
+        status = VERIFIED if attempt_index == 0 else REPAIRED
+        return BoothResult(
+            answer=attempt.answer,
+            status=status,
+            confidence=attempt.confidence,
+            attempts=attempts,
+        )
+
+    return None
+
+
+def _next_prompt(original_prompt: str, attempt: Attempt) -> str:
+    """Prompt to use for the next attempt, if any retries remain."""
+    if attempt.parse_ok:
+        return _build_retry_prompt(original_prompt, attempt)
+    return _build_prompt(original_prompt)
+
+
+def _finalize_uncertain(attempts: List[Attempt]) -> BoothResult:
+    last_ok = next((a for a in reversed(attempts) if a.parse_ok), None)
+    return BoothResult(
+        answer=last_ok.answer if last_ok else None,
+        status=UNCERTAIN,
+        confidence=last_ok.confidence if last_ok else None,
+        attempts=attempts,
+    )
+
+
+def _validate_args(threshold: float, max_retries: int) -> None:
+    if not 0.0 <= threshold <= 1.0:
+        raise ValueError(f"threshold must be between 0.0 and 1.0, got {threshold}")
+    if max_retries < 0:
+        raise ValueError(f"max_retries must be >= 0, got {max_retries}")
+
+
 def check(
     call_fn: Callable[[str], str],
     prompt: str,
@@ -177,13 +243,14 @@ def check(
     reconsideration on low confidence (but not on ambiguity, which
     reconsideration can't fix).
 
-    call_fn: a callable that takes a single prompt string and returns
-        the model's raw text response. Callers wire this to whatever
-        client/model they use (Anthropic, OpenAI, etc.) and are
-        responsible for carrying over any system prompt that belongs
-        to the original call BOOTH is wrapping. Exceptions raised by
-        call_fn are caught per-attempt and treated as a failed attempt
-        — they do not propagate out of check().
+    call_fn: a synchronous callable that takes a single prompt string
+        and returns the model's raw text response. Callers wire this
+        to whatever client/model they use (Anthropic, OpenAI, etc.)
+        and are responsible for carrying over any system prompt that
+        belongs to the original call BOOTH is wrapping. Exceptions
+        raised by call_fn are caught per-attempt and treated as a
+        failed attempt — they do not propagate out of check().
+        For an async call_fn, use acheck() instead.
 
     threshold: minimum self-reported confidence (0.0-1.0) required to
         accept an unambiguous answer without retrying.
@@ -192,9 +259,24 @@ def check(
         low-confidence (non-ambiguous) answers. E.g. max_retries=1
         means up to 2 total calls to call_fn.
 
-    on_attempt: optional callback invoked as on_attempt(index, attempt)
-        after every attempt (including failed/unparseable ones), for
-        logging or building calibration data.
+    on_attempt: optional synchronous callback invoked as
+        on_attempt(index, attempt) after every attempt (including
+        failed/unparseable ones), for logging or building calibration
+        data. Must not be a coroutine function — check() cannot await
+        it; use acheck() with an async on_attempt instead.
+
+    Calling check() inside an async application (FastAPI, Starlette,
+    etc.) will block the event loop for the duration of each call_fn
+    call, since check() itself is fully synchronous. Run it in a
+    thread pool if you're inside async code:
+
+        result = await loop.run_in_executor(executor, booth.check, call_llm, prompt)
+
+    or, for kwargs beyond the first two positional args:
+
+        import functools
+        fn = functools.partial(booth.check, call_llm, prompt, threshold=0.8)
+        result = await loop.run_in_executor(executor, fn)
 
     Returns a BoothResult:
         result.answer          — what you show the user IF result.ok
@@ -211,10 +293,13 @@ def check(
         result.ambiguous         — True if AMBIGUOUS.
         result.interpretations   — list of readings, if ambiguous.
     """
-    if not 0.0 <= threshold <= 1.0:
-        raise ValueError(f"threshold must be between 0.0 and 1.0, got {threshold}")
-    if max_retries < 0:
-        raise ValueError(f"max_retries must be >= 0, got {max_retries}")
+    _validate_args(threshold, max_retries)
+    if on_attempt is not None and inspect.iscoroutinefunction(on_attempt):
+        raise TypeError(
+            "check() cannot await an async on_attempt callback. "
+            "Use acheck() with an async on_attempt, or pass a sync "
+            "callback to check()."
+        )
 
     attempts: List[Attempt] = []
     current_prompt = _build_prompt(prompt)
@@ -237,40 +322,87 @@ def check(
             on_attempt(i, attempt)
         attempts.append(attempt)
 
-        if attempt.parse_ok and attempt.ambiguous:
-            # Ambiguity is a property of the question, not something a
-            # reconsideration retry resolves — return immediately,
-            # regardless of confidence.
-            return BoothResult(
-                answer=attempt.answer,
-                status=AMBIGUOUS,
-                confidence=attempt.confidence,
-                attempts=attempts,
-                ambiguous=True,
-                interpretations=attempt.interpretations,
-            )
+        result = _evaluate(attempts, attempt, i, threshold)
+        if result is not None:
+            return result
 
-        if attempt.parse_ok and attempt.confidence >= threshold:
-            status = VERIFIED if i == 0 else REPAIRED
-            return BoothResult(
-                answer=attempt.answer,
-                status=status,
-                confidence=attempt.confidence,
-                attempts=attempts,
-            )
+        current_prompt = _next_prompt(prompt, attempt)
 
-        # Prepare the prompt for the next attempt, if any retries remain.
-        if attempt.parse_ok:
-            current_prompt = _build_retry_prompt(prompt, attempt)
+    return _finalize_uncertain(attempts)
+
+
+async def acheck(
+    call_fn: Callable[[str], Awaitable[str]],
+    prompt: str,
+    threshold: float = DEFAULT_THRESHOLD,
+    max_retries: int = DEFAULT_MAX_RETRIES,
+    on_attempt: Optional[
+        Union[Callable[[int, Attempt], Any], Callable[[int, Attempt], Awaitable[Any]]]
+    ] = None,
+) -> BoothResult:
+    """
+    Async twin of check(). Identical contract, identical Attempt /
+    BoothResult shape, identical retry/ambiguity decision logic (both
+    functions call the same internal _evaluate() step) — the only
+    difference is that call_fn (and on_attempt, if it's a coroutine
+    function) are awaited instead of called directly.
+
+    call_fn: an async callable — `async def call_fn(prompt: str) -> str`.
+        Passing a synchronous call_fn raises TypeError immediately;
+        use check() for those instead.
+
+    on_attempt: optional callback invoked as on_attempt(index, attempt)
+        after every attempt. May be sync or async — acheck() awaits it
+        only if it's a coroutine function, so a plain sync logging
+        callback works unchanged.
+
+    Exceptions raised by call_fn (including provider rate-limit and
+    timeout errors, which matter most under concurrent load) are
+    caught per-attempt and recorded as a failed Attempt, exactly as in
+    check() — they never propagate out of acheck().
+
+    See check() for the full parameter/return contract (threshold,
+    max_retries, and the BoothResult fields all behave identically).
+    """
+    if not inspect.iscoroutinefunction(call_fn):
+        raise TypeError(
+            "acheck() requires an async call_fn (async def ... -> str). "
+            "Use check() for a synchronous call_fn."
+        )
+    _validate_args(threshold, max_retries)
+
+    attempts: List[Attempt] = []
+    current_prompt = _build_prompt(prompt)
+
+    for i in range(max_retries + 1):
+        try:
+            raw = await call_fn(current_prompt)
+        except Exception as e:
+            # Same as check(): a dead call becomes a failed Attempt,
+            # never an exception that escapes acheck(). This matters
+            # more here, not less — this is exactly the path that
+            # fires under concurrent-load rate limiting.
+            attempt = Attempt(
+                raw_text=f"{type(e).__name__}: {e}",
+                answer=None,
+                confidence=None,
+                parse_ok=False,
+                error=str(e),
+            )
         else:
-            current_prompt = _build_prompt(prompt)
+            attempt = _parse_response(raw)
 
-    last_ok = attempts[-1] if attempts[-1].parse_ok else next(
-        (a for a in reversed(attempts) if a.parse_ok), None
-    )
-    return BoothResult(
-        answer=last_ok.answer if last_ok else None,
-        status=UNCERTAIN,
-        confidence=last_ok.confidence if last_ok else None,
-        attempts=attempts,
-    )
+        if on_attempt is not None:
+            if inspect.iscoroutinefunction(on_attempt):
+                await on_attempt(i, attempt)
+            else:
+                on_attempt(i, attempt)
+        attempts.append(attempt)
+
+        result = _evaluate(attempts, attempt, i, threshold)
+        if result is not None:
+            return result
+
+        current_prompt = _next_prompt(prompt, attempt)
+
+    return _finalize_uncertain(attempts)
