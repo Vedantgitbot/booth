@@ -7,7 +7,7 @@ model. Run: python3 tests/test_smoke.py
 import json
 import os
 import sys
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 import booth as bth
 
 
@@ -195,6 +195,102 @@ def test_negative_max_retries_raises():
         print("PASS: negative max_retries raises ValueError")
 
 
+def test_ambiguous_question_returns_ambiguous_status():
+    """Based on a real observed case: 'capital of Georgia' silently
+    resolved to Tbilisi (country) at 0.93 confidence, indistinguishable
+    from an unambiguous question. The model, when asked to flag
+    ambiguity first, should now surface it instead."""
+    def call_fn(prompt):
+        return json.dumps({
+            "ambiguous": True,
+            "interpretations": ["Georgia (US state) -> Atlanta", "Georgia (country) -> Tbilisi"],
+            "chosen_interpretation": "Georgia (country) -> Tbilisi",
+            "answer": "Tbilisi",
+            "confidence": 0.93,
+        })
+
+    r = bth.check(call_fn, "What is the capital of Georgia?", threshold=0.7, max_retries=1)
+    assert r.status == bth.AMBIGUOUS, r.status
+    assert r.ok is False, "AMBIGUOUS must not be treated as a safe-to-show result"
+    assert r.answer == "Tbilisi"
+    assert len(r.interpretations) == 2
+    assert r.n_attempts == 1, "ambiguity should short-circuit, not retry"
+    print("PASS: ambiguous question (capital of Georgia) -> AMBIGUOUS, not VERIFIED")
+
+
+def test_ambiguous_metric_question_returns_ambiguous_status():
+    """Based on a real observed case: 'largest bank' silently resolved
+    to ICBC (by assets) at high confidence, with no signal that
+    market-cap gives a different answer (JPMorgan Chase)."""
+    def call_fn(prompt):
+        return json.dumps({
+            "ambiguous": True,
+            "interpretations": ["Largest by total assets -> ICBC", "Largest by market capitalization -> JPMorgan Chase"],
+            "chosen_interpretation": "Largest by total assets -> ICBC",
+            "answer": "Industrial and Commercial Bank of China (ICBC)",
+            "confidence": 0.9,
+        })
+
+    r = bth.check(call_fn, "What's the largest bank?", threshold=0.7, max_retries=1)
+    assert r.status == bth.AMBIGUOUS, r.status
+    assert r.ok is False
+    assert any("market cap" in i.lower() for i in r.interpretations)
+    print("PASS: ambiguous metric question (largest bank) -> AMBIGUOUS, not VERIFIED")
+
+
+def test_unambiguous_question_still_verifies_normally():
+    """Sanity check: adding ambiguity detection must not break the
+    ordinary case. 'Capital of France' should still just VERIFY."""
+    def call_fn(prompt):
+        return json.dumps({
+            "ambiguous": False,
+            "interpretations": [],
+            "chosen_interpretation": None,
+            "answer": "Paris",
+            "confidence": 0.99,
+        })
+
+    r = bth.check(call_fn, "What is the capital of France?", threshold=0.7, max_retries=1)
+    assert r.status == bth.VERIFIED, r.status
+    assert r.ok is True
+    assert r.ambiguous is False
+    assert r.interpretations == []
+    print("PASS: unambiguous question still verifies normally with the extended schema")
+
+
+def test_ambiguous_field_missing_defaults_to_not_ambiguous():
+    """Backward compatibility: a response that omits 'ambiguous'
+    entirely (e.g. from a model that doesn't perfectly follow the
+    schema) should not crash, and should not be treated as ambiguous
+    by default."""
+    def call_fn(prompt):
+        return json.dumps({"answer": "Paris", "confidence": 0.95})
+
+    r = bth.check(call_fn, "What is the capital of France?", threshold=0.7, max_retries=0)
+    assert r.status == bth.VERIFIED, r.status
+    assert r.ambiguous is False
+    print("PASS: missing 'ambiguous' field defaults to False, no crash")
+
+
+def test_ambiguous_overrides_low_confidence_too():
+    """An ambiguous question with LOW confidence should still report
+    AMBIGUOUS, not fall through to UNCERTAIN — ambiguity is checked
+    before the confidence gate."""
+    def call_fn(prompt):
+        return json.dumps({
+            "ambiguous": True,
+            "interpretations": ["reading A", "reading B"],
+            "chosen_interpretation": "reading A",
+            "answer": "some answer",
+            "confidence": 0.3,
+        })
+
+    r = bth.check(call_fn, "some ambiguous question", threshold=0.7, max_retries=1)
+    assert r.status == bth.AMBIGUOUS, r.status
+    assert r.n_attempts == 1, "should not retry even though confidence was also low"
+    print("PASS: ambiguity is checked before the confidence gate, even at low confidence")
+
+
 if __name__ == "__main__":
     test_verified_first_try()
     test_repaired_on_retry()
@@ -211,4 +307,9 @@ if __name__ == "__main__":
     test_on_attempt_callback_fires_for_every_attempt()
     test_invalid_threshold_raises()
     test_negative_max_retries_raises()
+    test_ambiguous_question_returns_ambiguous_status()
+    test_ambiguous_metric_question_returns_ambiguous_status()
+    test_unambiguous_question_still_verifies_normally()
+    test_ambiguous_field_missing_defaults_to_not_ambiguous()
+    test_ambiguous_overrides_low_confidence_too()
     print("\nAll smoke tests passed.")
