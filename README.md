@@ -1,54 +1,61 @@
 # BOOTH
 
-**A lightweight checkpoint layer for LLM outputs.**
+**A lightweight checkpoint library for LLM outputs.**
 
-BOOTH sits between your application and an LLM call and decides whether an answer should pass through, be reconsidered, be flagged as resting on more than one valid interpretation, or be marked uncertain.
-
-The name comes from the idea of a **ticket booth, toll booth, or parking/payment booth**: a booth doesn't need to know everything about what is happening beyond it. It checks whether the required condition has been met before allowing something to pass.
-
-BOOTH follows the same idea for LLM outputs.
+BOOTH sits between your application and an LLM call and provides structured checkpoints for deciding whether an output should pass through, be reconsidered, be flagged as ambiguous, or be checked against evidence supplied by your application.
 
 > **BOOTH does not claim to know the truth. It checks whether an output meets a defined acceptance condition.**
+
+The name comes from the idea of a **ticket booth, toll booth, or parking/payment booth**: a booth doesn't need to know everything about what is happening beyond it. It checks whether the required condition has been met before allowing something to pass.
 
 ---
 
 ## Current Status
 
-**v0.3.1 — Path B only**
+**v0.4.0**
 
-The current implementation handles a bare LLM call:
+BOOTH currently provides:
 
-```text
-Prompt
-  ↓
-LLM
-  ↓
-ambiguous? + interpretations + answer + self-reported confidence
-  ↓
-BOOTH
-  ↓
-ambiguous == true?
-  ├── YES → AMBIGUOUS (returned immediately, no retry)
-  └── NO  → confidence ≥ threshold?
-                ├── YES → VERIFIED
-                └── NO  → reconsider
-                              ↓
-                           LLM again
-                              ↓
-                        confidence ≥ threshold?
-                           ├── YES → REPAIRED
-                           └── NO  → UNCERTAIN
-```
+* ambiguity detection
+* self-reported confidence checking
+* reconsideration retries for low-confidence answers
+* separate retry handling for unparseable model responses
+* synchronous and asynchronous LLM checkpoint functions
+* evidence-agreement checking against evidence supplied by the caller
+* configurable confidence and evidence thresholds
+* structured result objects
+* attempt history
+* explicit `VERIFIED`, `REPAIRED`, `AMBIGUOUS`, `UNCERTAIN`, and `BLOCKED` statuses
 
-There is currently **no RAG, tool invocation, or independent evidence checking** in Path B. Every signal BOOTH acts on — ambiguity, confidence — is the model's own self-report about its own answer. BOOTH structures and enforces that self-report; it does not independently verify anything against outside information. See [The Important Limitation](#the-important-limitation) below before using this in anything higher-stakes than a prototype.
-
-Available in both a synchronous form (`booth.check`) and an async form (`booth.acheck`) — see [Sync vs. Async](#sync-vs-async). Both are driven by the exact same internal decision logic, so they behave identically given equivalent model responses.
+BOOTH is provider-agnostic. It does not require a particular LLM provider, retrieval system, vector database, or framework.
 
 ---
 
 ## What BOOTH Does
 
-BOOTH asks the model to return, in this exact key order:
+A normal LLM call might look like:
+
+```python
+answer = call_llm(prompt)
+```
+
+BOOTH adds a checkpoint around the model call:
+
+```python
+import booth
+
+result = booth.check(
+    call_llm,
+    "What is the capital of France?"
+)
+
+if result.ok:
+    print(result.answer)
+else:
+    print(f"BOOTH returned {result.status}")
+```
+
+BOOTH asks the model to provide structured information about its response, including:
 
 ```json
 {
@@ -60,232 +67,301 @@ BOOTH asks the model to return, in this exact key order:
 }
 ```
 
-**The field order is deliberate, not cosmetic.** JSON is generated token by token, left to right. By requiring `ambiguous` and `interpretations` before `answer`, the model has to commit to an ambiguity judgment *before* it generates the answer text — this is a real constraint on generation order, not a self-audit tacked on after the fact.
+BOOTH then applies its configured acceptance rules to that response.
 
-If `ambiguous` is `true`, BOOTH returns immediately with status `AMBIGUOUS`, regardless of confidence. A question that's ambiguous as asked isn't fixed by asking the model to reconsider — reconsideration only helps when the question was answerable and the *answer* was shaky, so ambiguous responses skip the retry loop entirely.
+If the question is identified as ambiguous, BOOTH returns `AMBIGUOUS`.
 
-If `ambiguous` is `false` and the confidence is below the configured threshold, BOOTH shows the model its previous answer and confidence and asks it to **reconsider**:
+If it is not ambiguous but the reported confidence is below the configured threshold, BOOTH can ask the model to reconsider its previous answer.
+
+If the model reaches the threshold after reconsideration, the result is `REPAIRED`.
+
+If BOOTH cannot obtain an acceptable result, it returns `UNCERTAIN`.
+
+BOOTH also provides `check_with_evidence()` for applications that already have evidence from their own RAG, search, database, or tool pipeline.
+
+---
+
+## Features
+
+### Ambiguity detection
+
+BOOTH asks the model to identify whether the question has multiple valid interpretations before accepting the answer.
+
+For example:
 
 ```text
-On a previous attempt you answered: "Lyon" with confidence 0.3.
+What is the capital of Georgia?
+```
+
+could refer to:
+
+```text
+Georgia (the country) -> Tbilisi
+Georgia (the US state) -> Atlanta
+```
+
+BOOTH can return:
+
+```text
+AMBIGUOUS
+```
+
+with the detected interpretations available through:
+
+```python
+result.interpretations
+```
+
+Ambiguity takes priority over confidence. A highly confident answer can still be returned as `AMBIGUOUS` if the model identifies multiple valid readings.
+
+---
+
+### Confidence checking
+
+BOOTH uses the model's reported confidence as an acceptance signal.
+
+The default threshold is:
+
+```python
+0.7
+```
+
+You can configure it:
+
+```python
+result = booth.check(
+    call_llm,
+    prompt,
+    threshold=0.8
+)
+```
+
+The confidence value is **self-reported by the model**. BOOTH does not calibrate or independently validate that probability.
+
+---
+
+### Reconsideration retries
+
+When an answer is not ambiguous but its confidence is below the configured threshold, BOOTH can ask the model to reconsider its previous answer.
+
+For example:
+
+```text
+Previous answer: "Lyon"
+Previous confidence: 0.3
+
 Reconsider carefully. If that answer is correct, restate it.
 If it is wrong, give the corrected answer.
 ```
 
-If the reconsidered answer reaches the confidence threshold, BOOTH returns `REPAIRED`. If the model remains below the threshold after all allowed attempts, BOOTH returns `UNCERTAIN`.
+If the reconsidered answer reaches the threshold, BOOTH returns:
 
-**If a response doesn't parse at all** (no valid JSON, missing required keys, out-of-range confidence), BOOTH uses a *different* retry prompt than the reconsideration one above — it tells the model its previous output didn't parse and restates the format requirement, rather than silently repeating the original prompt. This matters because a model with a stable formatting habit (markdown fences, a chatty preamble) would otherwise fail the same way on every retry with no reason to correct course. `result.all_parse_failed` tells you, after the fact, whether `UNCERTAIN` happened because of this (nothing ever parsed) versus persistent low confidence (things parsed fine, the model just wasn't sure) — these call for different fixes on your end.
+```text
+REPAIRED
+```
 
----
-
-## Why?
-
-A normal LLM call looks like:
+You can control the number of retries:
 
 ```python
-answer = call_llm(prompt)
-```
-
-The application has to decide what to do with that answer, and has no way to know whether the question itself had more than one valid reading, or whether the model was actually confident.
-
-With BOOTH:
-
-```python
-result = booth.check(call_llm, prompt)
-
-if result.status == booth.AMBIGUOUS:
-    print("Multiple valid readings:", result.interpretations)
-elif result.ok:
-    answer = result.answer
-else:
-    answer = "I'm not confident enough to answer that."
-```
-
-The application gets a structured result instead of implementing the retry, parsing, confidence handling, ambiguity handling, and attempt tracking itself.
-
-**To be precise about what this buys you:** everything BOOTH surfaces here — the ambiguity flag, the confidence number — is something the underlying model was already capable of reporting if you'd asked it to, in the same request, with the same field ordering. BOOTH's value isn't a new capability the model didn't have; it's a tested, consistent, reusable implementation of asking for it correctly, parsing it reliably even when the model doesn't follow the format perfectly, and giving you a stable result object instead of everyone re-implementing this by hand per project.
-
-**Real example**, from testing against a live model:
-
-> **Question:** "What's the best-selling book?"
->
-> **Without BOOTH:** *"The best-selling book of all time is the Bible, with estimates of over 5 billion copies sold worldwide."* — stated as plain fact, no hint that the question is contested.
->
-> **With BOOTH:** `status: AMBIGUOUS, confidence: 0.88`, answer: "The Bible", with four listed interpretations — worldwide including religious texts, best-selling *novel*, best-selling *non-religious* book, and best-selling book *this year*. Same underlying model, same underlying "best guess" answer — but only one of the two tells the user the question was contested at all.
-
-**A case where BOOTH doesn't help, worth stating just as plainly:** if a model is simply *wrong* about a settled fact — misremembers a date, states an outdated fact as current, fabricates a detail — and reports high confidence and no ambiguity, BOOTH returns `VERIFIED`. It has no mechanism in Path B to catch this, because there's no independent source it checks against. Worse, if the model hedges between two equally-wrong answers, BOOTH can label that `AMBIGUOUS`, which reads as "the question is genuinely contested" even when the actual problem is that the model doesn't know the answer. This is a known, observed failure mode, not a hypothetical — see [Current Non-Goals](#current-non-goals).
-
----
-
-## Installation
-
-```bash
-pip install boothpy
-```
-
-Or install directly from GitHub:
-
-```bash
-pip install git+https://github.com/Vedantgitbot/booth.git
-```
-
-## Basic Usage
-
-BOOTH is provider-agnostic. You provide a function that takes a prompt and returns the model's raw text response.
-
-```python
-import booth
-
-
-def call_llm(prompt: str) -> str:
-    # Connect this to your LLM provider.
-    # Return the model's raw text response.
-    ...
-
-
 result = booth.check(
     call_llm,
-    "What is the capital of France?"
+    prompt,
+    max_retries=2
 )
-
-if result.ok:
-    print(result.answer)
-else:
-    print(f"BOOTH marked this {result.status.lower()}.")
 ```
 
-BOOTH does not require a specific LLM provider. Your `call_fn` can be backed by OpenAI, Anthropic, Groq, Gemini, a local model, or another system. See `examples/ai.py` for a full working example against the Groq API.
+`max_retries=0` means only the initial model call is made.
 
 ---
 
-## Sync vs. Async
+### Parse-failure handling
 
-| | `booth.check()` | `booth.acheck()` |
-|---|---|---|
-| `call_fn` signature | `Callable[[str], str]` (sync) | `Callable[[str], Awaitable[str]]` (`async def`) |
-| Use when | Scripts, sync codebases, or already running inside a thread/executor | Async web apps calling an async model client directly |
+LLM responses do not always follow the requested format.
 
-Passing a sync function to `acheck()` (or an async one to `check()`'s `on_attempt`) raises `TypeError` immediately rather than misbehaving silently.
+BOOTH handles parse failures separately from low-confidence answers.
+
+When a response cannot be parsed, the retry prompt tells the model that its previous response failed to meet the required format rather than simply repeating the original request.
+
+You can determine whether an `UNCERTAIN` result occurred because no response could ever be parsed:
+
+```python
+result.all_parse_failed
+```
+
+A value of:
+
+```python
+True
+```
+
+means that every attempt failed to produce a valid BOOTH response.
+
+---
+
+### Synchronous and asynchronous APIs
+
+BOOTH provides both:
+
+```python
+booth.check()
+```
+
+and:
+
+```python
+await booth.acheck()
+```
+
+The synchronous version accepts:
+
+```python
+Callable[[str], str]
+```
+
+The asynchronous version accepts:
+
+```python
+Callable[[str], Awaitable[str]]
+```
+
+Example:
 
 ```python
 import asyncio
 import booth
 
+
 async def call_llm(prompt: str) -> str:
-    response = await async_client.chat.completions.create(...)
-    return response.choices[0].message.content
+    response = await async_client(...)
+    return response
+
 
 async def main():
-    result = await booth.acheck(call_llm, "What is the capital of France?")
+    result = await booth.acheck(
+        call_llm,
+        "What is the capital of France?"
+    )
+
     if result.ok:
         print(result.answer)
+
 
 asyncio.run(main())
 ```
 
-**Calling `check()` from async code:** `check()` is fully synchronous — calling it directly inside an `async def` route blocks the event loop for the duration of every `call_fn` call. Run it in a thread pool instead:
+Both APIs use the same decision logic. The difference is how the supplied LLM function is called.
+
+---
+
+### Evidence agreement checking
+
+BOOTH also provides:
 
 ```python
-from concurrent.futures import ThreadPoolExecutor
-import asyncio, functools
-import booth
-
-executor = ThreadPoolExecutor(max_workers=20)
-
-async def handler():
-    loop = asyncio.get_event_loop()
-    fn = functools.partial(booth.check, call_llm, prompt, threshold=0.8)
-    result = await loop.run_in_executor(executor, fn)
+booth.check_with_evidence()
 ```
 
-**Concurrency note:** both `check()` and `acheck()` are stateless — no module-level mutable state, no shared caching — so concurrent calls don't interfere with each other. What determines whether your app holds up under concurrent load is `call_fn` itself (is your model client safe to call concurrently? are you within provider rate limits?), not BOOTH's internals.
+This checks whether an answer agrees with evidence that **your application has already retrieved**.
+
+Example:
+
+```python
+result = booth.check_with_evidence(
+    answer="Paris is the capital of France.",
+    evidence=[
+        "France's capital city is Paris."
+    ],
+    compare_fn=compare_answer_to_evidence,
+)
+```
+
+The comparison function belongs to the caller:
+
+```python
+def compare_answer_to_evidence(answer, evidence):
+    ...
+```
+
+BOOTH does not choose a retrieval system or comparison algorithm for you.
+
+The comparison function can return either:
+
+```python
+True
+```
+
+or:
+
+```python
+False
+```
+
+for a simple pass/fail comparison.
+
+It can also return a float between `0.0` and `1.0`:
+
+```python
+0.87
+```
+
+When a float is returned, BOOTH compares it with:
+
+```python
+evidence_threshold
+```
+
+For example:
+
+```python
+result = booth.check_with_evidence(
+    answer=answer,
+    evidence=evidence,
+    compare_fn=compare_answer_to_evidence,
+    evidence_threshold=0.8,
+)
+```
+
+A score of `0.87` passes.
+
+A score of `0.62` does not.
+
+Boolean comparison results are treated as strict pass/fail values. `evidence_threshold` is not applied to boolean results.
 
 ---
 
-## Result Statuses
+## Important: What Evidence Checking Means
 
-BOOTH currently exposes five statuses:
+`check_with_evidence()` checks **agreement with the evidence supplied to it**.
 
-### `VERIFIED`
-Not flagged ambiguous, and the **first attempt** met the confidence threshold. Means "passed BOOTH's acceptance condition," not "proven correct."
+It does not establish that the evidence itself is true.
 
-### `REPAIRED`
-Not flagged ambiguous. First attempt was below threshold, but a later reconsideration reached it. Means "recovered through reconsideration," not "independently verified."
-
-### `AMBIGUOUS`
-The model flagged more than one valid, meaningfully different reading — different entities sharing a name, different metrics, different time periods. Returned **immediately, regardless of confidence**, never retried.
+For example, if your application retrieves an incorrect document:
 
 ```text
-Question: "What is the capital of Georgia?"
-interpretations = ["Georgia (US state) -> Atlanta", "Georgia (country) -> Tbilisi"]
-→ AMBIGUOUS
+Digital downloads are never eligible for refunds.
 ```
 
-`result.answer` still contains the model's best-guess answer under its silently-chosen interpretation — check `result.interpretations` before showing it as settled fact.
-
-**Known limitations, both observed in testing, not hypothetical:**
-- Catches *structural* ambiguity (a name or term with genuinely different valid referents) reliably. Weaker on *convention-based* ambiguity, where the split only exists because of a domain norm the model has to already know about (e.g. bestseller-list conventions excluding religious texts).
-- Can also fire on a *fabricated* premise: if a model isn't sure what actually happened (a real event, a specific fact) it can generate two similar-sounding "interpretations" around its own uncertainty rather than a genuine reading split in the question. This looks identical to real ambiguity in the output and is not currently distinguishable from it. Treat `AMBIGUOUS` on questions about specific real-world facts (current events, exact figures) with extra skepticism until Path A exists to check the premise against something.
-
-### `UNCERTAIN`
-BOOTH could not obtain an answer that satisfied the acceptance condition — every attempt stayed below threshold, every response was unparseable, or every call failed. Check `result.all_parse_failed` to tell those cases apart: `True` means nothing ever parsed (a format/integration problem, not a confidence problem); `False` means the model produced usable answers but never reached the threshold.
-
-### `BLOCKED`
-Reserved for the broader BOOTH design and **not reachable from Path B**. Exposed so applications can pattern-match against the complete status vocabulary ahead of Path A.
-
----
-
-## The Important Limitation
-
-BOOTH's current Path B is **not a correctness guarantee**. It is a self-consistency and reconsideration mechanism, plus a self-assessed ambiguity check. The model is evaluating its own answer and its own question — there is no independent check in the loop.
-
-```json
-{"ambiguous": false, "answer": "The Earth is flat.", "confidence": 0.99}
-```
-
-BOOTH returns `VERIFIED` for this. It has no independent evidence in Path B to catch it.
-
-> **VERIFIED means "passed BOOTH's current acceptance condition," not "proven correct."**
-> **AMBIGUOUS means "the model recognized more than one valid reading," not "the question is actually contested."**
-
-This applies equally to `check()` and `acheck()` — the async entry point changes only how `call_fn` is invoked, not what's being checked.
-
-## Disclaimer
-
-BOOTH is provided for informational and software-development purposes and is provided "as is", without warranties of any kind. BOOTH does not guarantee factual correctness, safety, completeness, reliability, or suitability for any particular purpose.
-
-`VERIFIED` does not mean an answer has been independently proven correct. Acceptance in Path B is based entirely on the model's self-reported ambiguity and confidence. Users are responsible for independently testing and validating BOOTH and any outputs produced through it before relying on them, especially in production, safety-critical, financial, medical, legal, or other high-consequence applications.
-
-The authors and contributors are not responsible for claims, decisions, damages, data loss, or other consequences resulting from the use or misuse of BOOTH, to the extent permitted by applicable law.
-
-See the MIT License for the applicable warranty and liability terms.
-
----
-
-## Path A — Planned, Not a Different Product
-
-Path A is the same checkpoint with **one additional gate**, not a rewrite or a new product. Path B stays exactly as it is — Path A adds a second, independent check alongside it:
+and your comparison function determines that the answer agrees with that document, BOOTH can return:
 
 ```text
-Gate 1 (Path B, exists today): is the question ambiguous?
-Gate 2 (Path B, exists today): is the model confident?
-Gate 3 (Path A, planned):      does the answer agree with evidence
-                                the caller already retrieved?
+VERIFIED
 ```
 
-**What Path A will and won't do, stated plainly to avoid overscoping it before it's built:**
+That means:
 
-- BOOTH will **not** perform retrieval itself, call a vector DB, or re-run a search. The caller's own RAG/tool pipeline retrieves evidence exactly as it does today; BOOTH is handed the answer *and* the evidence the pipeline already produced, and checks whether they agree — once, not in a loop. This mirrors how `call_fn` works today: BOOTH doesn't own the LLM call, the caller does; it won't own retrieval either.
-- No retry-the-retrieval-until-it-agrees behavior. If the evidence check is inconclusive, that's `UNCERTAIN` or `BLOCKED`, not a prompt to search again — an unbounded "keep trying tools" loop is explicitly out of scope; it would turn a checkpoint into an orchestrator.
-- Comparing an answer against retrieved evidence is a genuinely hard, unsolved design problem, not a detail — string match is too brittle, embedding similarity too loose, LLM-judged agreement re-introduces a self-report-style problem one layer removed. The comparison method is **not decided yet** and will likely be pluggable (`compare_fn`) rather than a single built-in choice BOOTH forces on every caller.
-- Even a working Gate 3 only proves the answer agrees with what was retrieved — **not that the retrieved evidence itself is correct, current, or complete.** That ceiling will be stated in Path A's own limitations section as plainly as Path B's is stated here.
-- This will require a different call shape than `check()`/`acheck()` today, since it needs the evidence handed to it alongside the answer, not just a prompt string.
+> The answer passed the supplied evidence comparison.
 
-Path A is not implemented in the current release.
+It does **not** mean:
+
+> BOOTH independently established that the evidence is correct.
+
+The quality, relevance, completeness, freshness, and correctness of retrieved evidence remain the responsibility of the application.
 
 ---
 
 ## API
+
+### `booth.check()`
 
 ```python
 booth.check(
@@ -297,130 +373,481 @@ booth.check(
 )
 ```
 
+Checks an LLM response using ambiguity detection, confidence checking, and reconsideration.
+
+#### `call_fn`
+
+A synchronous function:
+
+```python
+Callable[[str], str]
+```
+
+It receives a prompt and returns the model's raw response.
+
+#### `prompt`
+
+The original application or user prompt.
+
+#### `threshold`
+
+Minimum self-reported confidence required to accept an unambiguous answer.
+
+Default:
+
+```python
+0.7
+```
+
+Must be between `0.0` and `1.0`.
+
+#### `max_retries`
+
+Number of retries after the initial attempt.
+
+Default:
+
+```python
+1
+```
+
+#### `on_attempt`
+
+Optional callback invoked after each attempt.
+
+---
+
+### `booth.acheck()`
+
 ```python
 await booth.acheck(
-    call_fn,        # async def call_fn(prompt: str) -> str
+    call_fn,
     prompt,
     threshold=0.7,
     max_retries=1,
-    on_attempt=None,  # may be sync or async
+    on_attempt=None,
 )
 ```
 
-**`call_fn`** — for `check()`: `Callable[[str], str]`. For `acheck()`: `Callable[[str], Awaitable[str]]`. Receives a prompt, returns the model's raw response. Exceptions raised by `call_fn` are caught per-attempt and recorded as a failed `Attempt` — they never propagate out.
+Asynchronous equivalent of `check()`.
 
-**`prompt`** — the original user/application prompt. BOOTH appends its confidence/ambiguity-reporting instructions internally.
+The supplied `call_fn` must be asynchronous:
 
-**`threshold`** — minimum self-reported confidence (`0.0`–`1.0`) required to accept an unambiguous answer without retrying. Default `0.7`. **Not independently calibrated** — validate against your own test set; see `examples/` for a way to log real (question, status, confidence) data.
+```python
+async def call_llm(prompt: str) -> str:
+    ...
+```
 
-**`max_retries`** — retries after the first attempt, for low-confidence *unambiguous* answers or unparseable responses. `max_retries=0` means one total call; `max_retries=2` allows up to three.
+---
 
-**`on_attempt`** — optional callback invoked after every attempt (including failed/unparseable ones). For `check()`: must be synchronous, `Callable[[int, Attempt], Any]` — a coroutine function raises `TypeError`. For `acheck()`: may be sync or async.
+### `booth.check_with_evidence()`
+
+```python
+booth.check_with_evidence(
+    answer,
+    evidence,
+    compare_fn,
+    evidence_threshold=0.7,
+)
+```
+
+Checks an answer against caller-supplied evidence.
+
+It:
+
+* makes no LLM calls
+* makes no network calls
+* performs no retrieval
+* performs no retries
+* does not modify a previous `BoothResult`
+* uses the caller's `compare_fn`
+
+#### `answer`
+
+The answer being checked.
+
+#### `evidence`
+
+A sequence of evidence strings already retrieved by the application.
+
+#### `compare_fn`
+
+A caller-supplied comparison function:
+
+```python
+Callable[[str, Sequence[str]], bool | float]
+```
+
+It receives:
+
+```python
+answer
+evidence
+```
+
+and returns either a boolean or a score from `0.0` to `1.0`.
+
+#### `evidence_threshold`
+
+Minimum score required when `compare_fn` returns a float.
+
+Default:
+
+```python
+0.7
+```
+
+It is separate from `check()`'s `threshold` because the two values represent different things.
 
 ---
 
 ## Result Object
 
-```python
-result.answer            # str | None
-result.status            # VERIFIED / REPAIRED / AMBIGUOUS / UNCERTAIN / BLOCKED
-result.confidence        # float | None
-result.attempts          # list[Attempt] — full history of every call made
-result.n_attempts        # int
-result.ok                # bool — True only for VERIFIED / REPAIRED
-result.ambiguous         # bool
-result.interpretations   # list[str] — populated only when ambiguous
-result.all_parse_failed  # bool — True if UNCERTAIN happened because every
-                          #   attempt failed to parse, as opposed to persistent
-                          #   low confidence. Different fixes apply to each:
-                          #   parse failures usually mean a format/integration
-                          #   problem; low confidence means the model genuinely
-                          #   wasn't sure.
-```
+BOOTH returns a `BoothResult`.
 
-Identical whether the result came from `check()` or `acheck()`.
+Important fields include:
 
 ```python
-if result.status == booth.AMBIGUOUS:
-    print("This question has multiple readings:", result.interpretations)
-elif result.ok:
-    print(result.answer)
-elif result.all_parse_failed:
-    print("BOOTH never got a parseable response — check your call_fn / format instructions.")
-else:
-    print("BOOTH could not verify a confident answer.")
+result.answer
+result.status
+result.confidence
+result.evidence_agreement
+result.attempts
+result.n_attempts
+result.ok
+result.ambiguous
+result.interpretations
+result.all_parse_failed
 ```
 
----
+### `answer`
 
-## Why the Checkpoint Metaphor?
+The answer produced by the model or supplied to the evidence checker.
 
-A ticket booth doesn't know whether the movie is good. A toll booth doesn't know where you're ultimately going. They check a **specific condition**.
+May be `None` when no usable answer exists.
 
-BOOTH applies the same principle: it does not know everything, it checks whether the required condition has been met. In Path B, that condition is:
+### `status`
+
+One of:
 
 ```text
-Is this question answerable as a single, unambiguous claim,
-and does the model report confidence at or above the configured threshold?
+VERIFIED
+REPAIRED
+AMBIGUOUS
+UNCERTAIN
+BLOCKED
 ```
 
-In Path A, an additional condition gets added alongside it, not in place of it: does the answer agree with evidence the caller already retrieved?
+### `confidence`
+
+For normal LLM checks, this contains the model's self-reported confidence.
+
+For evidence checks, it contains the comparison score when available.
+
+### `evidence_agreement`
+
+The comparison score produced by `check_with_evidence()`.
+
+It is `None` for normal `check()` / `acheck()` results.
+
+### `attempts`
+
+The full history of LLM attempts made by `check()` or `acheck()`.
+
+Evidence checks do not make attempts, so their attempt list is empty.
+
+### `n_attempts`
+
+Number of recorded attempts.
+
+### `ok`
+
+Returns:
+
+```python
+True
+```
+
+only for:
+
+```text
+VERIFIED
+REPAIRED
+```
+
+It is `False` for:
+
+```text
+AMBIGUOUS
+UNCERTAIN
+BLOCKED
+```
+
+### `ambiguous`
+
+Whether the model marked the question as ambiguous.
+
+### `interpretations`
+
+The interpretations reported when the model marks a question as ambiguous.
+
+### `all_parse_failed`
+
+Indicates that all LLM attempts failed to produce a parseable BOOTH response.
+
+This is useful for distinguishing a formatting/integration problem from persistent model uncertainty.
 
 ---
 
-## Design Principles
+## Result Statuses
 
-1. **Don't silently pass through uncertainty or unstated ambiguity.** If the model can't clear the bar, say so.
-2. **Reconsider rather than blindly resample.** A retry should give the model a real opportunity to examine its previous answer — and a parse-failure retry should tell the model what went wrong, not just repeat the ask unchanged.
-3. **Ask "is this even answerable as asked" before "how confident are you."** Field order in the schema forces this sequencing, not just the prompt wording.
-4. **Don't pretend confidence is proof.** Self-reported confidence and self-reported ambiguity are useful signals, not independent evidence.
-5. **Stay provider-agnostic.** BOOTH works above different LLM providers rather than locking applications to one API.
-6. **Keep the core API small.** A checkpoint layer, not another full LLM framework. Path A adds a gate, not an orchestrator — BOOTH will not own retrieval, retry evidence lookups, or manage a tool-calling loop.
+### `VERIFIED`
+
+The result passed BOOTH's acceptance condition on the relevant check.
+
+For normal LLM checking, this means the answer was not marked ambiguous and met the confidence threshold on the initial attempt.
+
+For evidence checking, this means the supplied comparison passed.
+
+`VERIFIED` does **not** mean independently proven true.
 
 ---
 
-## Current Non-Goals
+### `REPAIRED`
 
-BOOTH Path B does **not** currently:
+The initial LLM answer did not meet the confidence requirement, but a reconsideration attempt produced an acceptable result.
 
-- guarantee factual correctness
-- independently verify claims against external evidence
-- browse the web, perform RAG, or invoke external tools
-- compare multiple independent models
-- provide calibrated confidence probabilities (self-reported confidence is a signal, not a calibrated statistic)
-- reliably catch **convention-based** ambiguity requiring domain knowledge to recognize as a split — meaningfully better than no check, confirmed working on **structural** ambiguity, but not exhaustive
-- distinguish genuine multi-reading ambiguity from a model hedging between two flavors of the same wrong/fabricated answer — both currently surface as `AMBIGUOUS` and look identical from the outside
-- retry with backoff on rate-limit/network errors — a failed `call_fn` attempt is recorded and the loop moves on; there is no separate network-level retry/backoff policy
-- replace application-specific safety or validation logic
+---
 
-Those may be addressed by Path A or future work — but as of this version, none of them are solved.
+### `AMBIGUOUS`
+
+The model identified multiple valid interpretations of the question.
+
+BOOTH returns this immediately rather than using a confidence retry to resolve it.
+
+---
+
+### `UNCERTAIN`
+
+BOOTH could not obtain an acceptable result.
+
+This can occur because:
+
+* the model remained below the confidence threshold
+* every response failed to parse
+* the answer or evidence supplied to `check_with_evidence()` was empty
+* the evidence comparison function raised an exception
+* the evidence comparison function returned an invalid score
+
+---
+
+### `BLOCKED`
+
+The supplied evidence comparison did not pass.
+
+For example, a float comparison score below the configured `evidence_threshold` produces:
+
+```text
+BLOCKED
+```
+
+A boolean `False` from `compare_fn` also produces:
+
+```text
+BLOCKED
+```
+
+---
+
+## What BOOTH Does Not Do
+
+BOOTH currently does **not**:
+
+* guarantee factual correctness
+* independently establish truth
+* automatically browse the web
+* automatically perform RAG
+* automatically retrieve evidence
+* automatically choose a vector database
+* automatically choose an evidence-comparison method
+* retry evidence retrieval
+* manage a tool-calling loop
+* compare multiple independent LLMs
+* provide calibrated confidence probabilities
+* guarantee that retrieved evidence is correct, complete, relevant, or current
+* replace application-specific validation or safety systems
+
+BOOTH is a **checkpoint library**, not an LLM framework, search engine, RAG framework, or autonomous verification system.
+
+---
+
+## Current Limitations
+
+### Self-reported confidence
+
+Confidence in normal LLM checking comes from the model itself.
+
+A model can report:
+
+```json
+{
+  "confidence": 0.99
+}
+```
+
+and still be wrong.
+
+BOOTH does not independently calibrate that number.
+
+---
+
+### Self-reported ambiguity
+
+Ambiguity detection also depends on the model recognizing the ambiguity.
+
+BOOTH can detect useful structural ambiguities, but it cannot guarantee that every possible interpretation is identified.
+
+A model can also mistake its own uncertainty for ambiguity.
+
+---
+
+### Evidence quality
+
+Evidence checking is only as useful as the evidence and comparison function supplied by the application.
+
+If the evidence is wrong, incomplete, outdated, or unrelated, BOOTH does not independently detect that.
+
+Likewise, a weak `compare_fn` can produce a misleading result.
+
+---
+
+### No automatic retrieval
+
+`check_with_evidence()` deliberately does not retrieve documents.
+
+The application owns retrieval:
+
+```text
+Application
+    ↓
+Retrieve evidence
+    ↓
+BOOTH.check_with_evidence()
+    ↓
+VERIFIED / BLOCKED / UNCERTAIN
+```
+
+This keeps BOOTH small and provider-agnostic.
+
+---
+
+### No automatic reconciliation
+
+`check_with_evidence()` is a standalone evidence checkpoint.
+
+It does not automatically consume or modify the result of `check()` or `acheck()`.
+
+If an application wants to use multiple BOOTH checks together, the application decides how those results should be combined.
+
+For example:
+
+```python
+b_result = booth.check(call_llm, prompt)
+
+if b_result.ok:
+    a_result = booth.check_with_evidence(
+        b_result.answer,
+        evidence,
+        compare_fn,
+    )
+
+    if a_result.ok:
+        print(a_result.answer)
+```
+
+The composition logic remains under application control.
+
+---
+
+## Future Plans
+
+Future BOOTH development may explore:
+
+* stronger evidence adequacy checks
+* better handling of evidence completeness
+* improved detection of convention-based ambiguity
+* methods for distinguishing genuine ambiguity from model uncertainty
+* additional evidence-comparison strategies
+* richer composition of multiple checkpoint results
+* better evaluation and calibration tooling
+* additional integrations with retrieval and tool systems
+
+These are future directions, not capabilities currently guaranteed by the library.
+
+---
+
+## Installation
+
+```bash
+pip install boothpy
+```
+
+BOOTH is also installable directly from GitHub:
+
+```bash
+pip install git+https://github.com/Vedantgitbot/booth.git
+```
 
 ---
 
 ## Development
 
-```text
-booth/
-├── .gitignore
-├── LICENSE
-├── README.md
-├── TUTORIAL.md
-├── pyproject.toml
-├── src/
-│   └── booth/
-│       ├── __init__.py
-│       └── core.py
-└── tests/
-    ├── test_core.py
-    └── test_acheck.py
-```
+Clone the repository and install the development dependencies:
 
 ```bash
 pip install -e ".[dev]"
+```
+
+Run the test suite:
+
+```bash
 pytest
 ```
 
-Tests use mock `call_fn` implementations so core BOOTH behavior can be tested without making real LLM API calls. See `examples/ai.py` and `examples/app.py` for a working end-to-end example against a live model (Groq).
+The test suite covers the core checkpoint behavior, asynchronous API, parsing behavior, ambiguity handling, reconsideration, and evidence checking.
+
+The evidence-checking tests include cases for:
+
+* passing float scores
+* failing float scores
+* boolean comparison
+* boolean `False` with a zero threshold
+* empty answers
+* empty evidence
+* comparison exceptions
+* invalid comparison scores
+* non-numeric comparison results
+* invalid evidence thresholds
+* result-field behavior
+* independent evidence thresholds
+
+---
+
+## Design Principles
+
+1. **Keep the checkpoint small.** BOOTH should provide a reusable decision layer rather than become another full LLM framework.
+
+2. **Make uncertainty explicit.** When an output does not meet the configured acceptance condition, return a structured status instead of silently passing it through.
+
+3. **Treat ambiguity separately from confidence.** A confident answer can still be ambiguous if the question has multiple valid interpretations.
+
+4. **Reconsider instead of blindly resampling.** Retries give the model an opportunity to examine its previous response.
+
+5. **Keep evidence retrieval outside BOOTH.** Applications remain free to use their own RAG, search, database, or tool infrastructure.
+
+6. **Do not pretend agreement is truth.** Agreement with an answer, confidence value, or retrieved evidence is not the same as independently proving the claim.
+
+7. **Stay provider-agnostic.** BOOTH works with different LLM providers because the application supplies the model-calling function.
 
 ---
 
@@ -428,4 +855,6 @@ Tests use mock `call_fn` implementations so core BOOTH behavior can be tested wi
 
 This is the official BOOTH repository — Vedant Brahmbhatt
 
-MIT. See [`LICENSE`](LICENSE).
+BOOTH is released under the MIT License.
+
+See [`LICENSE`](LICENSE) for the full license text.
