@@ -2,7 +2,14 @@ import inspect
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, List, Optional, Union
+from typing import Any, Awaitable, Callable, List, Optional, Sequence, Union
+
+# check_with_evidence()'s comparison function: takes an answer and the
+# evidence it's being checked against, returns either a bool (pass/fail,
+# bypasses evidence_threshold entirely) or a float score in [0.0, 1.0]
+# (compared against evidence_threshold). Deliberately not built into
+# BOOTH itself — see check_with_evidence()'s docstring for why.
+CompareFn = Callable[[str, Sequence[str]], Union[bool, float]]
 
 VERIFIED = "VERIFIED"
 REPAIRED = "REPAIRED"
@@ -64,6 +71,16 @@ class BoothResult:
     attempts: List[Attempt] = field(default_factory=list)
     ambiguous: bool = False
     interpretations: List[str] = field(default_factory=list)
+    # Populated only by check_with_evidence() (Path A's evidence gate).
+    # None for any result coming from check()/acheck() (Path B). Holds
+    # the same numeric value as `confidence` for evidence results — the
+    # duplication is deliberate: `confidence` keeps a uniform meaning
+    # ("how strongly does BOOTH stand behind this answer") across both
+    # paths so callers can branch on result.ok/.status generically,
+    # while `evidence_agreement` makes it explicit, when present, that
+    # this particular number came from an evidence comparison rather
+    # than the model's own self-report.
+    evidence_agreement: Optional[float] = None
 
     @property
     def n_attempts(self) -> int:
@@ -74,7 +91,10 @@ class BoothResult:
         """True if the result is safe to show to a user as-is, no
         caveats needed. AMBIGUOUS is deliberately NOT ok: a confidently
         answered but silently-chosen interpretation still needs the
-        caller to decide how to handle the ambiguity."""
+        caller to decide how to handle the ambiguity. For
+        check_with_evidence() results, BLOCKED (evidence disagreed) and
+        UNCERTAIN (empty input / compare_fn error) are both correctly
+        NOT ok via this same status check — no separate logic needed."""
         return self.status in (VERIFIED, REPAIRED)
 
     @property
@@ -276,6 +296,130 @@ def _validate_args(threshold: float, max_retries: int) -> None:
         raise ValueError(f"threshold must be between 0.0 and 1.0, got {threshold}")
     if max_retries < 0:
         raise ValueError(f"max_retries must be >= 0, got {max_retries}")
+
+
+def _validate_evidence_args(evidence_threshold: float) -> None:
+    if not 0.0 <= evidence_threshold <= 1.0:
+        raise ValueError(
+            f"evidence_threshold must be between 0.0 and 1.0, got {evidence_threshold}"
+        )
+
+
+def check_with_evidence(
+    answer: str,
+    evidence: Sequence[str],
+    compare_fn: CompareFn,
+    evidence_threshold: float = DEFAULT_THRESHOLD,
+) -> BoothResult:
+    """
+    Path A's evidence gate. Checks whether `answer` agrees with
+    `evidence` the caller already retrieved (from their own RAG/tool
+    pipeline), using a caller-supplied `compare_fn`. A pure function —
+    makes no LLM calls, no network calls, and does not retry.
+
+    This is a standalone checkpoint, not an aggregator: it does not
+    read or mutate a prior BoothResult from check()/acheck(), and does
+    not attempt to reconcile Path B's ambiguity/confidence check with
+    this evidence check. That reconciliation is the caller's job. If a
+    prior check()/acheck() result was not .ok (UNCERTAIN or AMBIGUOUS),
+    there is generally no reason to run this at all — an answer that
+    wasn't confident or was ambiguous in the first place isn't made
+    more trustworthy by also agreeing with evidence, and callers should
+    typically skip straight to handling that Path B outcome instead:
+
+        b_result = check(call_llm, prompt)
+        if b_result.ok:
+            a_result = check_with_evidence(b_result.answer, docs, compare_fn)
+            final_ok = a_result.ok        # both gates passed
+        else:
+            final_ok = False              # Path B already failed; don't bother
+
+    compare_fn: Callable[[str, Sequence[str]], bool | float]. Receives
+        the answer and the evidence sequence, returns either:
+          - bool: True/False, pass/fail. `evidence_threshold` is
+            IGNORED entirely for bool returns — False always produces
+            BLOCKED regardless of what evidence_threshold is set to,
+            it is not compared against 0.0 as if it were a score.
+          - float: a score, expected in [0.0, 1.0], compared against
+            evidence_threshold (score >= evidence_threshold passes).
+            A score outside [0.0, 1.0] violates the contract and is
+            treated as a comparison failure (UNCERTAIN), the same way
+            check()/acheck() refuse to clamp an out-of-range
+            self-reported confidence rather than silently accepting it.
+        BOOTH does not supply a default compare_fn — how to compare an
+        answer against evidence (string match, embedding similarity,
+        LLM-judged entailment, something else) is a real design
+        decision with real tradeoffs that belongs to the caller, not a
+        default this library should quietly pick for you.
+        Exceptions raised by compare_fn are caught and treated as
+        UNCERTAIN, not propagated.
+
+    evidence_threshold: minimum compare_fn float score required to
+        pass. Deliberately a SEPARATE parameter from check()'s
+        `threshold` — they measure different things (an evidence
+        agreement score here vs. self-reported model confidence there)
+        and must not be conflated by sharing one parameter name.
+        Default 0.7, same default as `threshold`, but not otherwise
+        related to it. Must be between 0.0 and 1.0.
+
+    Returns a BoothResult:
+        status = VERIFIED  — compare_fn passed (True, or float >= evidence_threshold)
+        status = BLOCKED   — compare_fn failed (False, or float < evidence_threshold)
+        status = UNCERTAIN — answer or evidence was empty, compare_fn
+                              raised, or compare_fn returned a float
+                              outside [0.0, 1.0]
+        result.confidence and result.evidence_agreement both hold the
+            same numeric score (1.0/0.0 for bool, the raw float
+            otherwise); None for UNCERTAIN.
+        result.ambiguous, result.interpretations, result.attempts are
+            always the Path-B defaults (False / [] / []) — they don't
+            apply to this path. result.ok and result.all_parse_failed
+            need no special-casing: they're computed from `status` and
+            `attempts` respectively via the same properties check()/
+            acheck() results use, and already do the right thing here
+            (ok is True only for VERIFIED; all_parse_failed is False
+            since attempts is always empty).
+    """
+    _validate_evidence_args(evidence_threshold)
+
+    if not answer or not evidence:
+        return BoothResult(answer=answer or None, status=UNCERTAIN, confidence=None)
+
+    try:
+        raw_result = compare_fn(answer, evidence)
+    except Exception:
+        return BoothResult(answer=answer, status=UNCERTAIN, confidence=None)
+
+    if isinstance(raw_result, bool):
+        # Bool short-circuits entirely: this is a pass/fail contract,
+        # not a 1.0/0.0 score to be compared against
+        # evidence_threshold. If it were compared like a float, a
+        # caller-set evidence_threshold=0.0 would make False >= 0.0
+        # true and incorrectly pass — bools must never be run through
+        # the threshold comparison at all, only floats are.
+        score = 1.0 if raw_result else 0.0
+        passed = raw_result
+    else:
+        try:
+            score = float(raw_result)
+        except (TypeError, ValueError):
+            return BoothResult(answer=answer, status=UNCERTAIN, confidence=None)
+        if not 0.0 <= score <= 1.0:
+            # Out-of-range score violates the contract we documented
+            # for compare_fn. Treat as a failed comparison rather than
+            # silently comparing an invalid number against the
+            # threshold — same principle as check()'s refusal to clamp
+            # out-of-range self-reported confidence.
+            return BoothResult(answer=answer, status=UNCERTAIN, confidence=None)
+        passed = score >= evidence_threshold
+
+    status = VERIFIED if passed else BLOCKED
+    return BoothResult(
+        answer=answer,
+        status=status,
+        confidence=score,
+        evidence_agreement=score,
+    )
 
 
 def check(
