@@ -2,9 +2,10 @@ import inspect
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, List, Optional, Sequence, Union
+from typing import Any, Awaitable, Callable, List, Optional, Sequence, Tuple, Union
 
 CompareFn = Callable[[str, Sequence[str]], Union[bool, float]]
+ValidatorFn = Callable[[str], Union[bool, Tuple[bool, str]]]
 
 VERIFIED = "VERIFIED"
 REPAIRED = "REPAIRED"
@@ -48,6 +49,12 @@ class Attempt:
     ambiguous: bool = False
     interpretations: List[str] = field(default_factory=list)
     chosen_interpretation: Optional[str] = None
+    # Both default to "validation never applied" — True/None — so a
+    # caller who never passes validator= sees zero change in behavior:
+    # this branch of _evaluate()/_next_prompt()/method can never fire
+    # for them, since "not passed_validation" is always False.
+    passed_validation: bool = True
+    validation_error: Optional[str] = None
 
 
 @dataclass
@@ -74,41 +81,44 @@ class BoothResult:
 
     @property
     def method(self) -> str:
-        """Which of BOOTH's mechanisms produced this result — not a new
-        status, a lens on the existing one. Purely derived from fields
-        that already exist (status, attempts, all_parse_failed); no new
-        stored state, so it can never drift out of sync with them.
+        """Which of BOOTH's mechanisms produced this result. Purely
+        derived from existing fields; no new stored state.
 
-            "ambiguity"      — status is AMBIGUOUS (only reachable from
-                                check()/acheck(); check_with_evidence()
-                                never produces this status)
+            "ambiguity"      — status is AMBIGUOUS
             "evidence"       — result came from check_with_evidence()
-                                (identified by attempts == [], since
-                                that function is pure/non-retrying and
-                                never populates attempts — true for its
-                                VERIFIED, BLOCKED, and UNCERTAIN alike)
+                                (attempts == [])
             "parse_failure"  — check()/acheck() UNCERTAIN because every
-                                attempt failed to parse (or every
-                                call_fn call raised) — no self-report
-                                was ever successfully obtained
-            "confidence"     — the ordinary case: check()/acheck()
-                                VERIFIED/REPAIRED, or UNCERTAIN from
-                                persistent low confidence with at least
-                                one attempt that did parse successfully
+                                attempt failed to parse or raised
+            "validation"     — check()/acheck() UNCERTAIN because the
+                                LAST attempt parsed fine but failed a
+                                caller-supplied validator (0.4.2+) —
+                                distinct from "parse_failure" and from
+                                "confidence": the model produced usable
+                                output and was confident, but a custom
+                                rule rejected it every retry
+            "confidence"     — the ordinary case: VERIFIED/REPAIRED, or
+                                UNCERTAIN from persistent low confidence
+                                on an attempt that DID parse and DID
+                                pass validation (or no validator was
+                                supplied)
 
-        Only meaningful for results actually returned by check(),
-        acheck(), or check_with_evidence() — a BoothResult constructed
-        directly with an unusual field combination (e.g. status=BLOCKED
-        with non-empty attempts, which none of the three functions
-        above ever produce) falls through these branches in an
-        undefined way, same caveat as ok/all_parse_failed already carry
-        for hand-built results."""
+        Checked in the same order the pipeline itself evaluates an
+        attempt (ambiguity -> parse -> validation -> confidence), so
+        for any mixed attempt history this reflects the LAST attempt's
+        actual determining factor, same rule all_parse_failed already
+        established — not a full history, just the final word. Only
+        meaningful for results actually returned by check(), acheck(),
+        or check_with_evidence(); a hand-built BoothResult with an
+        unusual field combination falls through these branches in an
+        undefined way, same caveat as ok/all_parse_failed."""
         if self.status == AMBIGUOUS:
             return "ambiguity"
         if not self.attempts:
             return "evidence"
         if self.all_parse_failed:
             return "parse_failure"
+        if not self.attempts[-1].passed_validation:
+            return "validation"
         return "confidence"
 
 
@@ -135,6 +145,24 @@ def _build_parse_failure_prompt(original_prompt: str, previous: Attempt) -> str:
         f"your response as a single JSON object with exactly the "
         f"required keys, and nothing else — no markdown code fences, "
         f"no commentary before or after it."
+        f"{_CONFIDENCE_SUFFIX}"
+    )
+
+
+def _build_validation_failure_prompt(original_prompt: str, previous: Attempt) -> str:
+    """Shown only when the previous attempt parsed fine and was not
+    ambiguous, but a caller-supplied validator rejected it. Distinct
+    from _build_retry_prompt (which is about low self-reported
+    confidence) — this shows the SPECIFIC validation_error, a stronger
+    and more concrete correction signal than confidence ever is,
+    similar in spirit to how _build_evidence_reconsideration_prompt in
+    examples/ai.py shows real evidence rather than vague uncertainty."""
+    return (
+        f"{original_prompt.rstrip()}\n\n"
+        f"Your previous answer was: \"{previous.answer}\"\n\n"
+        f"That answer failed validation: {previous.validation_error}\n\n"
+        f"Reconsider carefully and provide a corrected answer that "
+        f"satisfies the validation requirement."
         f"{_CONFIDENCE_SUFFIX}"
     )
 
@@ -196,12 +224,68 @@ def _parse_response(raw_text: str) -> Attempt:
     return Attempt(raw_text=raw_text, answer=None, confidence=None, parse_ok=False)
 
 
+def _run_validator(
+    validator: Optional[ValidatorFn], answer: Optional[str]
+) -> Tuple[bool, Optional[str]]:
+    """Normalizes every possible validator outcome (bool, (bool, str),
+    an invalid return type, or an exception) into a single
+    (passed, error_message) pair. Never lets a broken validator crash
+    check()/acheck() — same discipline check_with_evidence() already
+    applies to compare_fn. validator=None or answer=None short-circuits
+    to (True, None): nothing to validate, so nothing can fail — this is
+    what makes validator=None a true no-op rather than a special case
+    threaded through the rest of the pipeline.
+
+    validator must be SYNCHRONOUS, same constraint as compare_fn in
+    check_with_evidence(). If your validation logic needs to await
+    something (an API call, a DB lookup), resolve it yourself and pass
+    the already-resolved bool/(bool, str) result in via a plain sync
+    closure — calling an async validator here returns an unawaited
+    coroutine object, which is neither a bool nor a (bool, str) tuple
+    and is therefore correctly, if unhelpfully, treated as an invalid
+    return type rather than crashing."""
+    if validator is None or answer is None:
+        return True, None
+    try:
+        result = validator(answer)
+    except Exception as e:
+        return False, f"Validator raised {type(e).__name__}: {e}"
+
+    if isinstance(result, bool):
+        return result, (None if result else "Validator returned False")
+    if (
+        isinstance(result, tuple)
+        and len(result) == 2
+        and isinstance(result[0], bool)
+        and isinstance(result[1], str)
+    ):
+        return result[0], result[1]
+    return False, (
+        f"Validator returned an invalid type: {type(result).__name__} "
+        f"(expected bool or (bool, str))"
+    )
+
+
 def _evaluate(
     attempts: List[Attempt],
     attempt: Attempt,
     attempt_index: int,
     threshold: float,
 ) -> Optional[BoothResult]:
+    """Shared decision step, called identically from check() and
+    acheck() after every attempt (and after validation, if a validator
+    was supplied). Returns a BoothResult if the loop should stop here,
+    or None if the caller should proceed to the next attempt (or, if
+    out of attempts, to _finalize_uncertain).
+
+    Check order, matching the pipeline's own diagram: ambiguity first
+    (short-circuits regardless of validation or confidence — a question
+    that's ambiguous as asked isn't something a validator or a
+    confidence retry can fix), THEN validation (an attempt that parsed
+    fine but fails a caller's own rule doesn't even get a chance at the
+    confidence gate — no point checking self-reported confidence on an
+    answer the caller has already said is unacceptable), THEN
+    confidence, unchanged from before."""
     if attempt.parse_ok and attempt.ambiguous:
         return BoothResult(
             answer=attempt.answer,
@@ -211,6 +295,15 @@ def _evaluate(
             ambiguous=True,
             interpretations=attempt.interpretations,
         )
+
+    if attempt.parse_ok and not attempt.passed_validation:
+        # Reject without a special status — falls through to a
+        # validation-failure retry via _next_prompt(), or to
+        # _finalize_uncertain() (UNCERTAIN, method="validation") if
+        # retries are exhausted. No new status, per design: validation
+        # failure is a reason a normal accept/retry decision came out
+        # the way it did, not a new outcome of its own.
+        return None
 
     if attempt.parse_ok and attempt.confidence >= threshold:
         status = VERIFIED if attempt_index == 0 else REPAIRED
@@ -225,9 +318,18 @@ def _evaluate(
 
 
 def _next_prompt(original_prompt: str, attempt: Attempt) -> str:
-    if attempt.parse_ok:
-        return _build_retry_prompt(original_prompt, attempt)
-    return _build_parse_failure_prompt(original_prompt, attempt)
+    """Three-way branch, in the same order _evaluate() checks:
+    unparseable -> validation-failed -> low-confidence. Each gets its
+    own distinct retry prompt, because each represents a genuinely
+    different reason the previous attempt didn't clear the bar, and
+    conflating them (as _next_prompt() used to conflate parse failure
+    with confidence failure, before 0.3.1) gives the model no reason to
+    correct the SPECIFIC thing that was actually wrong."""
+    if not attempt.parse_ok:
+        return _build_parse_failure_prompt(original_prompt, attempt)
+    if not attempt.passed_validation:
+        return _build_validation_failure_prompt(original_prompt, attempt)
+    return _build_retry_prompt(original_prompt, attempt)
 
 
 def _finalize_uncertain(attempts: List[Attempt]) -> BoothResult:
@@ -297,7 +399,58 @@ def check(
     threshold: float = DEFAULT_THRESHOLD,
     max_retries: int = DEFAULT_MAX_RETRIES,
     on_attempt: Optional[Callable[[int, Attempt], Any]] = None,
+    *,
+    validator: Optional[ValidatorFn] = None,
 ) -> BoothResult:
+    """
+    Run `prompt` through `call_fn`, requesting a self-reported
+    confidence score and an ambiguity check, and retry-with-
+    reconsideration on low confidence, an unparseable response, or (if
+    `validator` is supplied) a failed custom validation check.
+
+    call_fn: see previous versions' docs — unchanged.
+
+    threshold / max_retries / on_attempt: unchanged from prior
+    versions.
+
+    validator (0.4.2+, keyword-only): optional Callable[[str], bool |
+        tuple[bool, str]]. Runs on an attempt's answer only after that
+        attempt has parsed successfully AND was not flagged ambiguous
+        — never on a parse failure (nothing to validate) and never on
+        an ambiguous answer (a question that's ambiguous as asked
+        isn't something a validator should be judging). Deliberately
+        SYNCHRONOUS, same constraint as check_with_evidence()'s
+        compare_fn — resolve any async work yourself before passing a
+        plain sync validator in.
+
+        Return bool: True passes, False fails with a generic message.
+        Return (bool, str): pass/fail plus your own explanation, shown
+            to the model verbatim on the retry prompt if it fails.
+        Any other return type, or an exception raised inside
+            validator, is treated as a failed validation — never
+            propagates out of check(), same discipline compare_fn gets
+            in check_with_evidence().
+
+        validator=None (the default) makes this entirely a no-op:
+        Attempt.passed_validation defaults to True and is never set to
+        anything else, so every code path introduced by this parameter
+        is provably unreachable for existing callers. Zero behavior
+        change if you don't pass it.
+
+    Returns a BoothResult. All fields behave as documented previously.
+    Two additions relevant to validator:
+
+        result.attempts[i].passed_validation / .validation_error —
+            per-attempt validation outcome, always True/None if
+            validator was never supplied.
+        result.method may now be "validation" — set when the FINAL
+            attempt parsed fine, was not ambiguous, but failed
+            validation and retries were exhausted (status UNCERTAIN).
+            Distinct from "parse_failure" (nothing usable was ever
+            produced) and from "confidence" (the model was confident
+            but never met a custom rule) — different fixes apply to
+            each.
+    """
     _validate_args(threshold, max_retries)
     if on_attempt is not None and inspect.iscoroutinefunction(on_attempt):
         raise TypeError(
@@ -323,6 +476,11 @@ def check(
         else:
             attempt = _parse_response(raw)
 
+        if attempt.parse_ok and not attempt.ambiguous:
+            passed, err = _run_validator(validator, attempt.answer)
+            attempt.passed_validation = passed
+            attempt.validation_error = err
+
         if on_attempt is not None:
             on_attempt(i, attempt)
         attempts.append(attempt)
@@ -344,7 +502,16 @@ async def acheck(
     on_attempt: Optional[
         Union[Callable[[int, Attempt], Any], Callable[[int, Attempt], Awaitable[Any]]]
     ] = None,
+    *,
+    validator: Optional[ValidatorFn] = None,
 ) -> BoothResult:
+    """
+    Async twin of check(). Identical contract, including validator
+    (0.4.2+, keyword-only, same sync-only constraint — see check()'s
+    docstring for the full validator contract). Both functions call
+    the same internal _evaluate()/_next_prompt()/_run_validator() so
+    they can't drift apart.
+    """
     if not inspect.iscoroutinefunction(call_fn):
         raise TypeError(
             "acheck() requires an async call_fn (async def ... -> str). "
@@ -368,6 +535,11 @@ async def acheck(
             )
         else:
             attempt = _parse_response(raw)
+
+        if attempt.parse_ok and not attempt.ambiguous:
+            passed, err = _run_validator(validator, attempt.answer)
+            attempt.passed_validation = passed
+            attempt.validation_error = err
 
         if on_attempt is not None:
             if inspect.iscoroutinefunction(on_attempt):
