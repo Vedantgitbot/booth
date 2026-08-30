@@ -55,6 +55,20 @@ class Attempt:
     # for them, since "not passed_validation" is always False.
     passed_validation: bool = True
     validation_error: Optional[str] = None
+    # The raw JSON object as returned by the model, BEFORE any of
+    # BOOTH's own coercion (str(answer), float(confidence), forcing
+    # interpretations into a list of strings, etc.). A transparency
+    # layer, not a second validation layer — BOOTH already decided
+    # parse_ok/answer/confidence/ambiguous from this same object;
+    # `parsed` exists so callers can see exactly what the model said,
+    # including fields BOOTH doesn't itself use (e.g. an extra field a
+    # caller asked the model to include alongside BOOTH's own schema).
+    # It can therefore legitimately DISAGREE in representation with the
+    # already-coerced fields above — e.g. parsed["confidence"] may be
+    # the string "0.95" while .confidence is the float 0.95 — that
+    # divergence is the point, not a bug. None only when parse_ok is
+    # False (nothing was ever successfully parsed to expose).
+    parsed: Optional[dict] = None
 
 
 @dataclass
@@ -66,6 +80,13 @@ class BoothResult:
     ambiguous: bool = False
     interpretations: List[str] = field(default_factory=list)
     evidence_agreement: Optional[float] = None
+    # Mirrors the raw parsed object from the attempt that determined
+    # this result: the winning attempt for VERIFIED/REPAIRED/AMBIGUOUS,
+    # the last successfully-parsed attempt for UNCERTAIN, or None if
+    # every attempt failed to parse. Always None for check_with_evidence()
+    # results — there is no LLM JSON parse involved on that path at all,
+    # same reason evidence_agreement stays None on check()/acheck() results.
+    parsed: Optional[dict] = None
 
     @property
     def n_attempts(self) -> int:
@@ -219,6 +240,7 @@ def _parse_response(raw_text: str) -> Attempt:
             ambiguous=ambiguous,
             interpretations=interpretations,
             chosen_interpretation=chosen,
+            parsed=obj,
         )
 
     return Attempt(raw_text=raw_text, answer=None, confidence=None, parse_ok=False)
@@ -294,6 +316,7 @@ def _evaluate(
             attempts=attempts,
             ambiguous=True,
             interpretations=attempt.interpretations,
+            parsed=attempt.parsed,
         )
 
     if attempt.parse_ok and not attempt.passed_validation:
@@ -312,6 +335,7 @@ def _evaluate(
             status=status,
             confidence=attempt.confidence,
             attempts=attempts,
+            parsed=attempt.parsed,
         )
 
     return None
@@ -339,6 +363,7 @@ def _finalize_uncertain(attempts: List[Attempt]) -> BoothResult:
         status=UNCERTAIN,
         confidence=last_ok.confidence if last_ok else None,
         attempts=attempts,
+        parsed=last_ok.parsed if last_ok else None,
     )
 
 

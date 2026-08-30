@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boothpy"
-version = "0.4.2"
-description = "A lightweight checkpoint layer for LLM outputs — Path B (self-reported confidence with reconsideration retries, sync and async) plus Path A's evidence-agreement gate."
+version = "0.4.3"
+description = "A lightweight checkpoint library for LLM outputs."
 readme = "README.md"
 requires-python = ">=3.9"
 license = { file = "LICENSE" }
