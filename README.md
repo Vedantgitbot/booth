@@ -12,7 +12,7 @@ The name comes from the idea of a **ticket booth, toll booth, or parking/payment
 
 ## Current Status
 
-**v0.4.2**
+**v0.4.3**
 
 BOOTH currently provides:
 
@@ -24,7 +24,7 @@ BOOTH currently provides:
 * synchronous and asynchronous LLM checkpoint functions
 * evidence-agreement checking against evidence supplied by the caller
 * configurable confidence and evidence thresholds
-* structured result objects, including `result.method` to identify which mechanism produced a result
+* structured result objects, including `result.method` to identify which mechanism produced a result, and `result.parsed` to expose the model's raw JSON response
 * attempt history
 * explicit `VERIFIED`, `REPAIRED`, `AMBIGUOUS`, `UNCERTAIN`, and `BLOCKED` statuses
 
@@ -248,7 +248,7 @@ result.method
 #                    attempt that did parse and did pass validation
 ```
 
-This is most useful for `UNCERTAIN` results, where it distinguishes three genuinely different problems that call for different fixes:
+This is most useful for `UNCERTAIN` results, where it distinguishes genuinely different problems that call for different fixes:
 
 ```python
 if result.status == booth.UNCERTAIN:
@@ -261,6 +261,40 @@ if result.status == booth.UNCERTAIN:
 ```
 
 `method` reflects the **last** attempt's determining factor for a mixed history (e.g. a parse failure followed by a validation failure reports `"validation"`), the same rule `all_parse_failed` already follows — it is not a full history of every attempt's outcome.
+
+---
+
+### `result.parsed`
+
+Exposes the model's **raw JSON response object**, exactly as returned — before any of BOOTH's own coercion (`str(answer)`, `float(confidence)`, forcing `interpretations` into a list of strings, and so on).
+
+```python
+result = booth.check(call_llm, "What is the order ID for this request?")
+
+result.answer         # BOOTH's normalized answer, e.g. "ORD-4471"
+result.parsed          # the raw dict the model returned, unmodified
+```
+
+This is a **transparency layer, not a second validation layer** — BOOTH already decided `answer`/`confidence`/`ambiguous` from this same object; `parsed` exists so you can see exactly what the model said, including fields BOOTH itself doesn't use:
+
+```python
+def call_llm(prompt: str) -> str:
+    # imagine the model, prompted to also include a source field,
+    # returns:
+    # {"answer": "30 days", "confidence": "0.95", "ambiguous": false,
+    #  "source_document": "policy.pdf"}
+    ...
+
+result = booth.check(call_llm, prompt)
+
+result.confidence             # 0.95 (float — BOOTH coerced it)
+result.parsed["confidence"]   # "0.95" (str — the raw value, untouched)
+result.parsed["source_document"]  # "policy.pdf" — a field BOOTH never asked for or uses
+```
+
+That type divergence between `result.confidence` and `result.parsed["confidence"]` is deliberate, not a bug — `parsed` is meant to show you precisely what came back, even where BOOTH normalized it for its own use.
+
+`parsed` reflects the attempt that determined the result: the winning attempt for `VERIFIED`/`REPAIRED`/`AMBIGUOUS`, the last *successfully parsed* attempt for `UNCERTAIN`, or `None` if no attempt ever parsed. `check_with_evidence()` results always have `parsed=None` — there is no LLM JSON parse involved on that path at all.
 
 ---
 
@@ -315,7 +349,7 @@ async def main():
 asyncio.run(main())
 ```
 
-Both APIs use the same decision logic, including `validator`. The difference is how the supplied LLM function is called.
+Both APIs use the same decision logic, including `validator` and `parsed`. The difference is how the supplied LLM function is called.
 
 ---
 
@@ -371,7 +405,7 @@ A score of `0.87` passes. A score of `0.62` does not.
 
 Boolean comparison results are treated as strict pass/fail values. `evidence_threshold` is not applied to boolean results.
 
-`check_with_evidence()` has no `validator` concept — it is a standalone, single-purpose comparison gate, untouched by the `validator` addition in this release.
+`check_with_evidence()` has no `validator` concept, and its results always have `parsed=None` — it is a standalone, single-purpose comparison gate, untouched by either the `validator` or `parsed` additions.
 
 ---
 
@@ -485,6 +519,7 @@ Checks an answer against caller-supplied evidence. It:
 * performs no retries
 * does not modify a previous `BoothResult`
 * has no `validator` parameter — it is a standalone comparison gate
+* always returns `parsed=None` — there is no LLM JSON response involved
 * uses the caller's `compare_fn`
 
 #### `answer`
@@ -523,6 +558,7 @@ result.ambiguous
 result.interpretations
 result.all_parse_failed
 result.method
+result.parsed
 ```
 
 ### `answer`
@@ -543,7 +579,7 @@ The comparison score produced by `check_with_evidence()`. `None` for normal `che
 
 ### `attempts`
 
-The full history of LLM attempts made by `check()` or `acheck()`, each including per-attempt `passed_validation` / `validation_error` (always `True` / `None` if no `validator` was supplied). Evidence checks do not make attempts, so their attempt list is empty.
+The full history of LLM attempts made by `check()` or `acheck()`, each including per-attempt `passed_validation` / `validation_error` (always `True` / `None` if no `validator` was supplied) and `parsed` (the raw JSON object for that specific attempt, `None` if it failed to parse). Evidence checks do not make attempts, so their attempt list is empty.
 
 ### `n_attempts`
 
@@ -568,6 +604,10 @@ The interpretations reported when the model marks a question as ambiguous.
 ### `method` (0.4.2+)
 
 Which mechanism produced the result — `"ambiguity"`, `"evidence"`, `"parse_failure"`, `"validation"`, or `"confidence"`. See [`result.method`](#resultmethod) above.
+
+### `parsed` (0.4.3+)
+
+The model's raw, uncoerced JSON response object. See [`result.parsed`](#resultparsed) above.
 
 ---
 
@@ -621,6 +661,7 @@ BOOTH currently does **not**:
 * provide calibrated confidence probabilities
 * guarantee that retrieved evidence is correct, complete, relevant, or current
 * guarantee that a custom `validator` is itself correct — a validator can pass a wrong answer or reject a correct one, same as any other application-supplied rule
+* validate or enforce a schema on `result.parsed` — it is exposed as-is, entirely unvalidated
 * replace application-specific validation or safety systems (though `validator` gives you a documented hook to plug your own logic into BOOTH's retry loop rather than reimplementing that loop yourself)
 
 BOOTH is a **checkpoint library**, not an LLM framework, search engine, RAG framework, or autonomous verification system.
@@ -640,6 +681,10 @@ Ambiguity detection depends on the model recognizing the ambiguity. BOOTH can de
 ### Custom validator correctness
 
 `validator` is exactly as reliable as the logic you give it. BOOTH enforces that a validator's decision is respected consistently in the retry loop — it does not, and cannot, check whether the validator's own logic is actually correct for your use case.
+
+### `result.parsed` is unvalidated
+
+`result.parsed` is the model's raw JSON object, exposed as-is. BOOTH does not validate its shape, enforce a schema on it, or guarantee any field beyond the five it extracts for itself (`answer`, `confidence`, `ambiguous`, `interpretations`, `chosen_interpretation`) is present or well-typed. Reading extra fields from `parsed` is entirely the caller's responsibility, including handling missing keys or unexpected types.
 
 ### Evidence quality
 
@@ -697,6 +742,7 @@ Future BOOTH development may explore:
 * richer composition of multiple checkpoint results
 * better evaluation and calibration tooling
 * additional integrations with retrieval and tool systems
+* an optional, lightweight structured-schema gate on top of `result.parsed` — deferred deliberately until there's a clear, minimal shape for it, rather than reaching for a general schema/validation dependency
 
 These are future directions, not capabilities currently guaranteed by the library.
 
@@ -730,9 +776,9 @@ Run the test suite:
 pytest
 ```
 
-The test suite covers the core checkpoint behavior, asynchronous API, parsing behavior, ambiguity handling, reconsideration, custom validation, and evidence checking. CI runs the full suite on push/PR across Python 3.9–3.12.
+The test suite covers the core checkpoint behavior, asynchronous API, parsing behavior, ambiguity handling, reconsideration, custom validation, evidence checking, and raw-response exposure via `result.parsed`. CI runs the full suite on push/PR across Python 3.9–3.12.
 
-The validator tests include cases for: `validator=None` full-regression parity, boolean and `(bool, str)` returns, exceptions raised inside a validator, invalid return types, validator never running on ambiguous or unparseable attempts, fail-then-pass producing `REPAIRED`, the distinct validation-failure retry prompt, mixed multi-attempt histories and how `result.method` resolves them, and `check()`/`acheck()` parity under `validator`.
+The `parsed` tests specifically verify: the raw object matches the model's actual JSON (including cases where a field's type diverges from BOOTH's own coerced field, and cases where the model includes extra fields BOOTH doesn't use), correct behavior across `VERIFIED`/`REPAIRED`/`AMBIGUOUS`/`UNCERTAIN`, `parsed` reflecting the last successfully parsed attempt in a mixed history, `parsed=None` on total parse failure, `parsed=None` for every `check_with_evidence()` outcome, and `check()`/`acheck()` parity.
 
 ---
 
@@ -742,9 +788,10 @@ The validator tests include cases for: `validator=None` full-regression parity, 
 2. **Make uncertainty explicit.** When an output does not meet the configured acceptance condition, return a structured status instead of silently passing it through.
 3. **Treat ambiguity, validation, and confidence as separate, ordered checks.** A confident, validator-passing answer can still be ambiguous; a confident answer can still fail a caller's own validation rule before confidence is ever consulted.
 4. **Reconsider instead of blindly resampling.** Retries give the model an opportunity to examine its previous response — and the reason it failed (parse failure, validation failure, or low confidence) determines what the model is actually shown.
-5. **Keep evidence retrieval outside BOOTH.** Applications remain free to use their own RAG, search, database, or tool infrastructure.
-6. **Do not pretend agreement is truth.** Agreement with an answer, confidence value, custom validator, or retrieved evidence is not the same as independently proving the claim.
-7. **Stay provider-agnostic.** BOOTH works with different LLM providers because the application supplies the model-calling function.
+5. **Expose, don't reinterpret.** `result.parsed` is a transparency layer over data BOOTH already has, not a second parser or validator — it shows the model's raw response rather than deciding what it should mean.
+6. **Keep evidence retrieval outside BOOTH.** Applications remain free to use their own RAG, search, database, or tool infrastructure.
+7. **Do not pretend agreement is truth.** Agreement with an answer, confidence value, custom validator, or retrieved evidence is not the same as independently proving the claim.
+8. **Stay provider-agnostic.** BOOTH works with different LLM providers because the application supplies the model-calling function.
 
 ---
 

@@ -9,6 +9,34 @@ surface bump the patch version.
 
 Nothing yet.
 
+## [v0.4.3] — Attempt.parsed / result.parsed
+
+- Added `parsed: Optional[dict]` to `Attempt` and `BoothResult`: the
+  model's raw JSON object exactly as parsed, before any of BOOTH's own
+  coercion (`str(answer)`, `float(confidence)`, forcing
+  `interpretations` into a list of strings, etc.). A transparency layer,
+  not a second validation layer — every accept/retry decision was
+  already made from the coerced fields by the time `parsed` is
+  populated.
+- `parsed` can legitimately disagree in representation with BOOTH's own
+  coerced fields — e.g. `parsed["confidence"]` may be the string
+  `"0.95"` while `.confidence` is the float `0.95`. That divergence is
+  the intended contract, not a bug. Any extra field a caller asks the
+  model to include alongside BOOTH's own schema survives untouched in
+  `parsed`, even though BOOTH itself never reads it.
+- `Attempt.parsed` is `None` only when that attempt failed to parse.
+  `BoothResult.parsed` mirrors the winning attempt for
+  `VERIFIED`/`REPAIRED`/`AMBIGUOUS`, the last successfully-parsed
+  attempt for `UNCERTAIN` (even if a later attempt then failed to
+  parse), and `None` only if every attempt failed to parse.
+- `check_with_evidence()` results always have `parsed=None` — there is
+  no LLM JSON parse involved on that path at all, the same reason
+  `evidence_agreement` stays `None` on `check()`/`acheck()` results.
+- Metadata-only follow-up: the PyPI package description (separate from
+  this README) was also simplified from a Path-A/Path-B-specific
+  summary to a shorter, feature-agnostic line, so it doesn't need
+  updating every time a new mechanism is added.
+
 ## [v0.4.2] — validator=
 
 - Added `validator=`, an optional keyword-only parameter on `check()` and
@@ -119,7 +147,8 @@ Nothing yet.
   (not blind resampling) when confidence is below a configurable
   threshold. `VERIFIED` / `REPAIRED` / `UNCERTAIN` statuses.
 
-[Unreleased]: https://github.com/Vedantgitbot/booth/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/Vedantgitbot/booth/compare/v0.4.3...HEAD
+[v0.4.3]: https://github.com/Vedantgitbot/booth/releases/tag/v0.4.3
 [v0.4.2]: https://github.com/Vedantgitbot/booth/releases/tag/v0.4.2
 [v0.4.1]: https://github.com/Vedantgitbot/booth/releases/tag/v0.4.1
 [v0.4.0]: https://github.com/Vedantgitbot/booth/releases/tag/v0.4.0

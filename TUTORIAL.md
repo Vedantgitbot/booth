@@ -26,7 +26,7 @@ Check the installed version:
 import booth
 
 print(booth.__version__)
-# 0.4.2
+# 0.4.3
 ```
 
 ---
@@ -134,6 +134,7 @@ def log_attempt(index, attempt):
         attempt.parse_ok,
         attempt.ambiguous,
         attempt.passed_validation,
+        attempt.parsed,
     )
 
 
@@ -299,7 +300,49 @@ result = await booth.acheck(
 
 ---
 
-## 7. `BoothResult`
+## 7. Seeing the Model's Raw Response with `parsed`
+
+BOOTH coerces the model's response into consistent types for you — `answer` becomes a `str`, `confidence` becomes a `float`, `interpretations` becomes a `list[str]`. Most of the time that's exactly what you want. But sometimes you need to see exactly what the model actually sent, uncoerced — for logging, for debugging a model that's behaving oddly, or because you asked it to include your own extra field alongside BOOTH's schema.
+
+`result.parsed` (and the per-attempt `attempt.parsed`) gives you that raw object:
+
+```python
+result = booth.check(call_llm, "What's the refund window?")
+
+print(result.answer)      # "30 days"           — coerced string
+print(result.confidence)  # 0.95                — coerced float
+print(result.parsed)      # {"answer": "30 days", "confidence": "0.95", ...} — raw, as returned
+```
+
+Notice `result.parsed["confidence"]` can legitimately be the **string** `"0.95"` even though `result.confidence` is the **float** `0.95` — BOOTH coerced one and kept the other untouched. That's intentional, not a bug: `parsed` is a transparency layer over the raw object, not a second copy of the already-coerced fields.
+
+### Extra fields survive untouched
+
+If you ask the model to include something BOOTH doesn't itself use — a citation, a source document name, an internal reasoning tag — it shows up in `parsed` even though BOOTH never reads it:
+
+```python
+result = booth.check(call_llm, prompt)  # prompt asks the model to also include "source"
+print(result.parsed.get("source"))      # whatever the model put there, untouched
+```
+
+BOOTH does not validate or sanitize that extra content — treat it with the same skepticism you'd apply to any other model output that hasn't been checked.
+
+### Which attempt `parsed` reflects
+
+* `VERIFIED` / `REPAIRED` / `AMBIGUOUS`: the winning attempt.
+* `UNCERTAIN`: the **last successfully-parsed** attempt, even if a later attempt then failed to parse.
+* `None`: only if every single attempt failed to parse.
+
+```python
+if result.status == booth.UNCERTAIN and result.parsed is not None:
+    print("At least one attempt parsed; here's what it actually said:", result.parsed)
+```
+
+`check_with_evidence()` results always have `parsed=None` — there's no LLM JSON parse on that path at all.
+
+---
+
+## 8. `BoothResult`
 
 `check()`, `acheck()`, and `check_with_evidence()` return a `BoothResult`.
 
@@ -317,6 +360,7 @@ result.ambiguous
 result.interpretations
 result.all_parse_failed
 result.method
+result.parsed
 ```
 
 ### `answer`
@@ -349,6 +393,7 @@ attempt.ambiguous
 attempt.interpretations
 attempt.passed_validation   # always True if no validator was supplied
 attempt.validation_error    # always None if no validator was supplied, or if it passed
+attempt.parsed              # this attempt's raw JSON object, None if it failed to parse
 ```
 
 ### `n_attempts`
@@ -408,9 +453,13 @@ if result.status == booth.UNCERTAIN:
 
 `method` reflects the **last** attempt's determining factor in a mixed history — not a full record of every attempt's individual outcome. For that level of detail, inspect `result.attempts` directly.
 
+### `parsed`
+
+The raw, uncoerced JSON object the model returned, from whichever attempt determined the result. See section 7 above for the full contract. `None` if every attempt failed to parse, or for any `check_with_evidence()` result.
+
 ---
 
-## 8. Handling Results
+## 9. Handling Results
 
 A simple application can use:
 
@@ -448,7 +497,7 @@ elif result.status == booth.BLOCKED:
 
 ---
 
-## 9. Async Usage
+## 10. Async Usage
 
 BOOTH provides `acheck()` for asynchronous applications.
 
@@ -475,11 +524,11 @@ async def ask(prompt: str):
     return "Unable to provide an acceptable answer."
 ```
 
-The async function has the same behavior as `check()` but expects an async `call_fn`. `on_attempt` can also be asynchronous when using `acheck()`. `validator`, as covered in section 6, must always be synchronous regardless of which entry point you use.
+The async function has the same behavior as `check()` but expects an async `call_fn`. `on_attempt` can also be asynchronous when using `acheck()`. `validator`, as covered in section 6, must always be synchronous regardless of which entry point you use. `result.parsed` behaves identically on both.
 
 ---
 
-## 10. Evidence Checking
+## 11. Evidence Checking
 
 BOOTH can also check an answer against evidence already retrieved by your application:
 
@@ -525,7 +574,7 @@ A score of `0.87` produces `VERIFIED`; a score below `0.8` produces `BLOCKED`. B
 
 ### Important
 
-`check_with_evidence()` does not retrieve or verify the evidence itself, and has no `validator` parameter of its own — it is a single-purpose comparison gate. It:
+`check_with_evidence()` does not retrieve or verify the evidence itself, and has no `validator` or `parsed` of its own — it is a single-purpose comparison gate. It:
 
 * makes no LLM calls
 * makes no network calls
@@ -536,7 +585,7 @@ The application is responsible for retrieving the evidence and deciding how evid
 
 ---
 
-## 11. Complete Example
+## 12. Complete Example
 
 ```python
 import booth
@@ -572,6 +621,7 @@ def ask(prompt: str):
         return {
             "status": result.status,
             "answer": result.answer,
+            "raw": result.parsed,
         }
 
     return {
@@ -586,7 +636,7 @@ print(ask("What is the capital of France?"))
 
 ---
 
-## 12. Limitations
+## 13. Limitations
 
 BOOTH is a checkpoint layer, not a guarantee of factual correctness.
 
@@ -597,16 +647,17 @@ In particular:
 * a confident model can still be wrong
 * retries do not guarantee correction
 * a `validator` is only as correct as the logic you give it — BOOTH enforces it consistently, but cannot judge whether the rule itself is right for your use case
+* `result.parsed` exposes the model's raw output exactly as sent — BOOTH does not validate or sanitize any extra fields it contains
 * evidence checking only measures agreement with supplied evidence
 * BOOTH does not verify whether the evidence itself is correct — including when that evidence was fed to the model as RAG context before the model answered
 * evidence retrieval is handled by the application
 * the quality of `compare_fn` directly affects evidence-checking results
-* `check_with_evidence()` does not automatically combine its result with a previous `check()` result, and has no `validator` of its own
+* `check_with_evidence()` does not automatically combine its result with a previous `check()` result, and has no `validator` or `parsed` of its own
 * each retry can increase LLM cost and latency — this applies to validator-driven retries the same as confidence-driven ones
 
 ---
 
-## 13. Current API
+## 14. Current API
 
 The main public functions are:
 
