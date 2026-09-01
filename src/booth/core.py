@@ -38,6 +38,37 @@ nothing else."""
 
 _JSON_RE = re.compile(r"\{[^{}]*\}")
 
+# Sentinel distinguishing "key absent" from "key present with an
+# unexpected value" — obj.get("ambiguous", False) collapses both cases
+# together, which is what let bug #1 below hide: a model outputting
+# the STRING "false" (not the JSON boolean false) for `ambiguous` was
+# silently flipped to True, because bool("false") is True in Python —
+# any non-empty string is truthy, this isn't a semantic conversion the
+# way float("0.95") is for confidence.
+_MISSING = object()
+
+
+def _coerce_ambiguous(raw) -> Optional[bool]:
+    """Coerce the raw `ambiguous` value into a real bool, or return
+    None if it's not a recognizable boolean at all. A real JSON bool
+    passes through unchanged. A string is only accepted if it's
+    literally "true"/"false" (case-insensitive) — anything else
+    (a number, a list, an unrecognized string) is rejected rather than
+    guessed at via bool(), which would silently misinterpret it the
+    way bug #1 did. Rejection here means the whole attempt is treated
+    as unparseable, same as an out-of-range confidence value — refusing
+    to silently accept invalid data is the existing design principle
+    for confidence; this extends it to ambiguous."""
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        lowered = raw.strip().lower()
+        if lowered == "true":
+            return True
+        if lowered == "false":
+            return False
+    return None
+
 
 @dataclass
 class Attempt:
@@ -49,25 +80,8 @@ class Attempt:
     ambiguous: bool = False
     interpretations: List[str] = field(default_factory=list)
     chosen_interpretation: Optional[str] = None
-    # Both default to "validation never applied" — True/None — so a
-    # caller who never passes validator= sees zero change in behavior:
-    # this branch of _evaluate()/_next_prompt()/method can never fire
-    # for them, since "not passed_validation" is always False.
     passed_validation: bool = True
     validation_error: Optional[str] = None
-    # The raw JSON object as returned by the model, BEFORE any of
-    # BOOTH's own coercion (str(answer), float(confidence), forcing
-    # interpretations into a list of strings, etc.). A transparency
-    # layer, not a second validation layer — BOOTH already decided
-    # parse_ok/answer/confidence/ambiguous from this same object;
-    # `parsed` exists so callers can see exactly what the model said,
-    # including fields BOOTH doesn't itself use (e.g. an extra field a
-    # caller asked the model to include alongside BOOTH's own schema).
-    # It can therefore legitimately DISAGREE in representation with the
-    # already-coerced fields above — e.g. parsed["confidence"] may be
-    # the string "0.95" while .confidence is the float 0.95 — that
-    # divergence is the point, not a bug. None only when parse_ok is
-    # False (nothing was ever successfully parsed to expose).
     parsed: Optional[dict] = None
 
 
@@ -80,12 +94,6 @@ class BoothResult:
     ambiguous: bool = False
     interpretations: List[str] = field(default_factory=list)
     evidence_agreement: Optional[float] = None
-    # Mirrors the raw parsed object from the attempt that determined
-    # this result: the winning attempt for VERIFIED/REPAIRED/AMBIGUOUS,
-    # the last successfully-parsed attempt for UNCERTAIN, or None if
-    # every attempt failed to parse. Always None for check_with_evidence()
-    # results — there is no LLM JSON parse involved on that path at all,
-    # same reason evidence_agreement stays None on check()/acheck() results.
     parsed: Optional[dict] = None
 
     @property
@@ -102,36 +110,6 @@ class BoothResult:
 
     @property
     def method(self) -> str:
-        """Which of BOOTH's mechanisms produced this result. Purely
-        derived from existing fields; no new stored state.
-
-            "ambiguity"      — status is AMBIGUOUS
-            "evidence"       — result came from check_with_evidence()
-                                (attempts == [])
-            "parse_failure"  — check()/acheck() UNCERTAIN because every
-                                attempt failed to parse or raised
-            "validation"     — check()/acheck() UNCERTAIN because the
-                                LAST attempt parsed fine but failed a
-                                caller-supplied validator (0.4.2+) —
-                                distinct from "parse_failure" and from
-                                "confidence": the model produced usable
-                                output and was confident, but a custom
-                                rule rejected it every retry
-            "confidence"     — the ordinary case: VERIFIED/REPAIRED, or
-                                UNCERTAIN from persistent low confidence
-                                on an attempt that DID parse and DID
-                                pass validation (or no validator was
-                                supplied)
-
-        Checked in the same order the pipeline itself evaluates an
-        attempt (ambiguity -> parse -> validation -> confidence), so
-        for any mixed attempt history this reflects the LAST attempt's
-        actual determining factor, same rule all_parse_failed already
-        established — not a full history, just the final word. Only
-        meaningful for results actually returned by check(), acheck(),
-        or check_with_evidence(); a hand-built BoothResult with an
-        unusual field combination falls through these branches in an
-        undefined way, same caveat as ok/all_parse_failed."""
         if self.status == AMBIGUOUS:
             return "ambiguity"
         if not self.attempts:
@@ -171,13 +149,6 @@ def _build_parse_failure_prompt(original_prompt: str, previous: Attempt) -> str:
 
 
 def _build_validation_failure_prompt(original_prompt: str, previous: Attempt) -> str:
-    """Shown only when the previous attempt parsed fine and was not
-    ambiguous, but a caller-supplied validator rejected it. Distinct
-    from _build_retry_prompt (which is about low self-reported
-    confidence) — this shows the SPECIFIC validation_error, a stronger
-    and more concrete correction signal than confidence ever is,
-    similar in spirit to how _build_evidence_reconsideration_prompt in
-    examples/ai.py shows real evidence rather than vague uncertainty."""
     return (
         f"{original_prompt.rstrip()}\n\n"
         f"Your previous answer was: \"{previous.answer}\"\n\n"
@@ -217,6 +188,18 @@ def _parse_response(raw_text: str) -> Attempt:
         confidence = obj.get("confidence")
         if answer is None or confidence is None:
             continue
+        # Bug #2 fix, highest severity in this batch: bool is a
+        # subclass of int in Python, so float(True) == 1.0 and
+        # float(False) == 0.0 succeed silently with NO exception.
+        # Unlike confidence="0.95" (a genuine, intended numeric-string
+        # conversion), a model outputting "confidence": true is a
+        # schema violation — accepting it produces a silent false
+        # VERIFIED at maximum confidence, the exact silent-wrong-answer
+        # failure mode this whole library exists to prevent. Must be
+        # rejected BEFORE the float() conversion below, since float()
+        # itself will not raise on a bool.
+        if isinstance(confidence, bool):
+            continue
         try:
             confidence = float(confidence)
         except (TypeError, ValueError):
@@ -224,13 +207,33 @@ def _parse_response(raw_text: str) -> Attempt:
         if not 0.0 <= confidence <= 1.0:
             continue
 
-        ambiguous = bool(obj.get("ambiguous", False))
+        # Bug #1 fix: bool(obj.get("ambiguous", False)) would silently
+        # flip a model-output STRING "false" to True, since any
+        # non-empty string is truthy in Python. _coerce_ambiguous only
+        # accepts a real bool or a literal "true"/"false" string;
+        # anything else rejects this candidate entirely rather than
+        # guessing at it.
+        raw_ambiguous = obj.get("ambiguous", _MISSING)
+        if raw_ambiguous is _MISSING:
+            ambiguous = False  # key genuinely absent — same default as before
+        else:
+            coerced = _coerce_ambiguous(raw_ambiguous)
+            if coerced is None:
+                continue  # present but not a recognizable boolean — reject, don't guess
+            ambiguous = coerced
+
         interpretations = obj.get("interpretations") or []
         if not isinstance(interpretations, list):
             interpretations = []
         interpretations = [str(i) for i in interpretations]
         chosen = obj.get("chosen_interpretation")
-        chosen = str(chosen) if chosen else None
+        # Bug #4 fix: `if chosen else None` used a truthy check, so a
+        # genuinely-present-but-falsy value (0, "", False) was silently
+        # discarded to None instead of being stringified. `is not None`
+        # correctly distinguishes "absent/null" from "present but
+        # falsy" — the same class of bug as #1, just on a field that
+        # doesn't drive any status decision (informational only).
+        chosen = str(chosen) if chosen is not None else None
 
         return Attempt(
             raw_text=raw_text,
@@ -246,26 +249,40 @@ def _parse_response(raw_text: str) -> Attempt:
     return Attempt(raw_text=raw_text, answer=None, confidence=None, parse_ok=False)
 
 
+def _is_boolish(value) -> bool:
+    """True for a native Python bool, AND for numpy.bool_ — recognized
+    by module+class name rather than by importing numpy, since booth
+    is zero-dependency by design. Bug #5 fix: without this,
+    isinstance(result, bool) rejects numpy.bool_ (not guaranteed to be
+    a bool subclass across numpy versions), so a validator's genuinely
+    correct pass/fail — plausible for anyone doing numeric/tabular
+    validation with numpy or pandas — gets silently reinterpreted as an
+    'invalid return type' failure, making the caller's correct logic
+    look broken through no fault of their own."""
+    if isinstance(value, bool):
+        return True
+    t = type(value)
+    return t.__module__ == "numpy" and t.__name__ == "bool_"
+
+
 def _run_validator(
     validator: Optional[ValidatorFn], answer: Optional[str]
 ) -> Tuple[bool, Optional[str]]:
-    """Normalizes every possible validator outcome (bool, (bool, str),
-    an invalid return type, or an exception) into a single
-    (passed, error_message) pair. Never lets a broken validator crash
-    check()/acheck() — same discipline check_with_evidence() already
-    applies to compare_fn. validator=None or answer=None short-circuits
-    to (True, None): nothing to validate, so nothing can fail — this is
-    what makes validator=None a true no-op rather than a special case
-    threaded through the rest of the pipeline.
-
-    validator must be SYNCHRONOUS, same constraint as compare_fn in
-    check_with_evidence(). If your validation logic needs to await
-    something (an API call, a DB lookup), resolve it yourself and pass
-    the already-resolved bool/(bool, str) result in via a plain sync
-    closure — calling an async validator here returns an unawaited
-    coroutine object, which is neither a bool nor a (bool, str) tuple
-    and is therefore correctly, if unhelpfully, treated as an invalid
-    return type rather than crashing."""
+    """Accepted return shapes, deliberately a bit wider than the
+    strict minimum, because both extra cases below are natural
+    mistakes a caller would make on a first attempt, not edge cases
+    they'd think to guard against themselves:
+      - bool (including numpy.bool_, see _is_boolish — bug #5)
+      - (bool, str)
+      - (bool, None) — "passed, no message needed" is a natural way to
+        write a plain-True return with an explicit None rather than
+        omitting the message; previously hit the strict
+        isinstance(result[1], str) check and was wrongly treated as an
+        invalid type (bug #6a).
+      - a 2-element LIST with the same (bool, str|None) shape as the
+        tuple above — [passed, message] is an easy habit to fall into
+        and was previously rejected outright by isinstance(result,
+        tuple) (bug #6b)."""
     if validator is None or answer is None:
         return True, None
     try:
@@ -273,15 +290,18 @@ def _run_validator(
     except Exception as e:
         return False, f"Validator raised {type(e).__name__}: {e}"
 
-    if isinstance(result, bool):
-        return result, (None if result else "Validator returned False")
-    if (
-        isinstance(result, tuple)
-        and len(result) == 2
-        and isinstance(result[0], bool)
-        and isinstance(result[1], str)
-    ):
-        return result[0], result[1]
+    if _is_boolish(result):
+        passed = bool(result)
+        return passed, (None if passed else "Validator returned False")
+
+    if isinstance(result, (tuple, list)) and len(result) == 2:
+        passed, message = result
+        if _is_boolish(passed) and (message is None or isinstance(message, str)):
+            passed = bool(passed)
+            if message is None:
+                message = None if passed else "Validator returned False (no message provided)"
+            return passed, message
+
     return False, (
         f"Validator returned an invalid type: {type(result).__name__} "
         f"(expected bool or (bool, str))"
@@ -294,20 +314,6 @@ def _evaluate(
     attempt_index: int,
     threshold: float,
 ) -> Optional[BoothResult]:
-    """Shared decision step, called identically from check() and
-    acheck() after every attempt (and after validation, if a validator
-    was supplied). Returns a BoothResult if the loop should stop here,
-    or None if the caller should proceed to the next attempt (or, if
-    out of attempts, to _finalize_uncertain).
-
-    Check order, matching the pipeline's own diagram: ambiguity first
-    (short-circuits regardless of validation or confidence — a question
-    that's ambiguous as asked isn't something a validator or a
-    confidence retry can fix), THEN validation (an attempt that parsed
-    fine but fails a caller's own rule doesn't even get a chance at the
-    confidence gate — no point checking self-reported confidence on an
-    answer the caller has already said is unacceptable), THEN
-    confidence, unchanged from before."""
     if attempt.parse_ok and attempt.ambiguous:
         return BoothResult(
             answer=attempt.answer,
@@ -320,12 +326,6 @@ def _evaluate(
         )
 
     if attempt.parse_ok and not attempt.passed_validation:
-        # Reject without a special status — falls through to a
-        # validation-failure retry via _next_prompt(), or to
-        # _finalize_uncertain() (UNCERTAIN, method="validation") if
-        # retries are exhausted. No new status, per design: validation
-        # failure is a reason a normal accept/retry decision came out
-        # the way it did, not a new outcome of its own.
         return None
 
     if attempt.parse_ok and attempt.confidence >= threshold:
@@ -342,13 +342,6 @@ def _evaluate(
 
 
 def _next_prompt(original_prompt: str, attempt: Attempt) -> str:
-    """Three-way branch, in the same order _evaluate() checks:
-    unparseable -> validation-failed -> low-confidence. Each gets its
-    own distinct retry prompt, because each represents a genuinely
-    different reason the previous attempt didn't clear the bar, and
-    conflating them (as _next_prompt() used to conflate parse failure
-    with confidence failure, before 0.3.1) gives the model no reason to
-    correct the SPECIFIC thing that was actually wrong."""
     if not attempt.parse_ok:
         return _build_parse_failure_prompt(original_prompt, attempt)
     if not attempt.passed_validation:
@@ -427,55 +420,6 @@ def check(
     *,
     validator: Optional[ValidatorFn] = None,
 ) -> BoothResult:
-    """
-    Run `prompt` through `call_fn`, requesting a self-reported
-    confidence score and an ambiguity check, and retry-with-
-    reconsideration on low confidence, an unparseable response, or (if
-    `validator` is supplied) a failed custom validation check.
-
-    call_fn: see previous versions' docs — unchanged.
-
-    threshold / max_retries / on_attempt: unchanged from prior
-    versions.
-
-    validator (0.4.2+, keyword-only): optional Callable[[str], bool |
-        tuple[bool, str]]. Runs on an attempt's answer only after that
-        attempt has parsed successfully AND was not flagged ambiguous
-        — never on a parse failure (nothing to validate) and never on
-        an ambiguous answer (a question that's ambiguous as asked
-        isn't something a validator should be judging). Deliberately
-        SYNCHRONOUS, same constraint as check_with_evidence()'s
-        compare_fn — resolve any async work yourself before passing a
-        plain sync validator in.
-
-        Return bool: True passes, False fails with a generic message.
-        Return (bool, str): pass/fail plus your own explanation, shown
-            to the model verbatim on the retry prompt if it fails.
-        Any other return type, or an exception raised inside
-            validator, is treated as a failed validation — never
-            propagates out of check(), same discipline compare_fn gets
-            in check_with_evidence().
-
-        validator=None (the default) makes this entirely a no-op:
-        Attempt.passed_validation defaults to True and is never set to
-        anything else, so every code path introduced by this parameter
-        is provably unreachable for existing callers. Zero behavior
-        change if you don't pass it.
-
-    Returns a BoothResult. All fields behave as documented previously.
-    Two additions relevant to validator:
-
-        result.attempts[i].passed_validation / .validation_error —
-            per-attempt validation outcome, always True/None if
-            validator was never supplied.
-        result.method may now be "validation" — set when the FINAL
-            attempt parsed fine, was not ambiguous, but failed
-            validation and retries were exhausted (status UNCERTAIN).
-            Distinct from "parse_failure" (nothing usable was ever
-            produced) and from "confidence" (the model was confident
-            but never met a custom rule) — different fixes apply to
-            each.
-    """
     _validate_args(threshold, max_retries)
     if on_attempt is not None and inspect.iscoroutinefunction(on_attempt):
         raise TypeError(
@@ -530,13 +474,6 @@ async def acheck(
     *,
     validator: Optional[ValidatorFn] = None,
 ) -> BoothResult:
-    """
-    Async twin of check(). Identical contract, including validator
-    (0.4.2+, keyword-only, same sync-only constraint — see check()'s
-    docstring for the full validator contract). Both functions call
-    the same internal _evaluate()/_next_prompt()/_run_validator() so
-    they can't drift apart.
-    """
     if not inspect.iscoroutinefunction(call_fn):
         raise TypeError(
             "acheck() requires an async call_fn (async def ... -> str). "

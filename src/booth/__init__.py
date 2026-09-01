@@ -5,6 +5,7 @@ from booth.core import (
     acheck,
     check_with_evidence,
     CompareFn,
+    ValidatorFn,
     VERIFIED,
     REPAIRED,
     AMBIGUOUS,
@@ -14,7 +15,7 @@ from booth.core import (
     DEFAULT_MAX_RETRIES,
 )
 
-__version__ = "0.4.3"
+__version__ = "0.4.4"
 
 __all__ = [
     "Attempt",
@@ -23,6 +24,7 @@ __all__ = [
     "acheck",
     "check_with_evidence",
     "CompareFn",
+    "ValidatorFn",
     "VERIFIED",
     "REPAIRED",
     "AMBIGUOUS",
