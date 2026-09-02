@@ -9,6 +9,74 @@ surface bump the patch version.
 
 Nothing yet.
 
+## [v0.4.4] — bugfix batch: silent-coercion fixes, missing export, validator-contract widening
+
+Six confirmed bugs, fixed together as one release. All are behavioral
+fixes to existing 0.4.x functionality — nothing here adds a new public
+function or parameter. Verified in a live Python shell before fixing
+(`bool("false") == True`, `float(True) == 1.0`), not assumed from
+inspection, and every fix has a dedicated regression test.
+
+- **Confidence accepting a JSON boolean (highest severity in this
+  batch).** `float(confidence)` never raises on a Python `bool` —
+  `float(True) == 1.0` and `float(False) == 0.0` succeed silently,
+  because `bool` is a subclass of `int`. A model outputting
+  `"confidence": true` (a schema violation, not a genuine numeric
+  string like `"0.95"`) was silently accepted as a perfect 1.0
+  confidence, producing a false `VERIFIED` — the exact silent-wrong-
+  answer failure mode this library exists to prevent. Now rejected
+  explicitly, before the `float()` conversion runs, and treated as an
+  unparseable attempt like any other schema violation.
+- **`ambiguous` accepting a non-boolean string.** `bool(obj.get(
+  "ambiguous", False))` used Python's `bool()`, which treats any
+  non-empty string as `True` — a model outputting the JSON *string*
+  `"false"` (not the boolean `false`) for this field was silently
+  flipped to `ambiguous=True`. New `_coerce_ambiguous()` accepts a real
+  boolean or a literal `"true"`/`"false"` string (case-insensitive);
+  anything else rejects the attempt rather than guessing at it, the
+  same principle already applied to out-of-range confidence.
+- **`ValidatorFn` missing from the public package.** Defined in
+  `booth.core` since `v0.4.2`, but never imported into or exported from
+  `booth/__init__.py` — anyone trying to type-hint their own validator
+  function (`def my_validator(answer: str) -> ...`) couldn't import the
+  alias from the documented public interface. Now exported:
+  `from booth import ValidatorFn`.
+- **`chosen_interpretation` silently dropping falsy-but-present
+  values.** `str(chosen) if chosen else None` used a truthy check, so a
+  model returning `0` or `""` for this field — genuinely present, just
+  falsy — was silently discarded to `None` as if the field were absent.
+  Changed to `is not None`, correctly distinguishing "absent/null" from
+  "present but falsy." Lower severity than the two above since this
+  field is informational and doesn't drive any status decision, but the
+  same class of bug.
+- **`validator`'s bool check rejecting `numpy.bool_`.**
+  `isinstance(result, bool)` is not guaranteed to be `True` for
+  `numpy.bool_` across numpy versions, so a validator using numpy or
+  pandas for numeric/tabular checks could have its genuinely correct
+  pass/fail silently reinterpreted as an "invalid return type" failure.
+  New `_is_boolish()` recognizes `numpy.bool_` by module and class name
+  rather than by importing numpy — BOOTH stays zero-dependency.
+- **`validator`'s `(bool, str)` tuple check too strict for two natural
+  mistakes.** `return True, None` — a natural way to write "passed, no
+  message needed" — previously failed because the second element had
+  to be a literal `str`, not `None`. Separately, `return [False, "..."]`
+  (a list instead of a tuple, an easy habit to fall into) failed
+  `isinstance(result, tuple)` outright. Both are now accepted with the
+  identical contract as `(bool, str)`; a `False` with no message gets a
+  generic fallback message. Genuinely malformed shapes (a 3-element
+  list, a non-boolean first element) are still correctly rejected —
+  confirmed by a dedicated negative test, not just assumed from the
+  widening.
+- **Three test-coverage gaps closed**, locking in behavior that was
+  previously correct by inspection but unverified: `confidence`
+  exactly equal to `threshold` passes on both `check()` and `acheck()`
+  (the boundary is `>=`, not `>`); a model wrapping its answer as
+  `[{...}]` instead of a bare object still recovers via the existing
+  regex fallback; and the actual (previously just assumed) outcome of
+  brace-like content inside an answer field colliding with the flat
+  regex fallback during a primary-parse failure is now documented by a
+  passing test rather than left unverified.
+
 ## [v0.4.3] — Attempt.parsed / result.parsed
 
 - Added `parsed: Optional[dict]` to `Attempt` and `BoothResult`: the
@@ -147,7 +215,8 @@ Nothing yet.
   (not blind resampling) when confidence is below a configurable
   threshold. `VERIFIED` / `REPAIRED` / `UNCERTAIN` statuses.
 
-[Unreleased]: https://github.com/Vedantgitbot/booth/compare/v0.4.3...HEAD
+[Unreleased]: https://github.com/Vedantgitbot/booth/compare/v0.4.4...HEAD
+[v0.4.4]: https://github.com/Vedantgitbot/booth/releases/tag/v0.4.4
 [v0.4.3]: https://github.com/Vedantgitbot/booth/releases/tag/v0.4.3
 [v0.4.2]: https://github.com/Vedantgitbot/booth/releases/tag/v0.4.2
 [v0.4.1]: https://github.com/Vedantgitbot/booth/releases/tag/v0.4.1

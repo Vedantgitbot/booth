@@ -12,7 +12,7 @@ The name comes from the idea of a **ticket booth, toll booth, or parking/payment
 
 ## Current Status
 
-**v0.4.3**
+**v0.4.4**
 
 BOOTH currently provides:
 
@@ -79,6 +79,8 @@ If the model reaches the threshold (and passes validation, if supplied) after re
 If BOOTH cannot obtain an acceptable result, it returns `UNCERTAIN`.
 
 BOOTH also provides `check_with_evidence()` for applications that already have evidence from their own RAG, search, database, or tool pipeline.
+
+**On robustness to malformed model output:** every field BOOTH extracts from the model's JSON response is validated against its expected type before being trusted, not just parsed and used as-is. A model returning the JSON string `"false"` instead of the boolean `false` for `ambiguous`, or the boolean `true` instead of a number for `confidence`, is rejected and treated as an unparseable attempt rather than silently coerced into the wrong value — the same discipline BOOTH has always applied to an out-of-range confidence score, now applied consistently across every coerced field. See the [Changelog](CHANGELOG.md)'s `v0.4.4` entry for the specific cases this covers.
 
 ---
 
@@ -208,7 +210,7 @@ result = booth.check(
 )
 ```
 
-`validator` receives the attempt's answer and returns either:
+`validator` receives the attempt's answer and returns one of:
 
 * `True` / `False` — a plain pass/fail. `False` produces a generic failure message.
 * `(bool, str)` — pass/fail plus a specific reason, shown to the model verbatim on the retry prompt:
@@ -222,13 +224,18 @@ def validate_amount(answer: str):
 result = booth.check(call_llm, prompt, validator=validate_amount)
 ```
 
+* `(bool, None)`, or the equivalent as a **list** rather than a tuple (`[bool, str]` / `[bool, None]`) — accepted with the identical contract as the tuple form above (0.4.4+). `return True, None` is a natural way to write "passed, no message needed," and `[passed, message]` is an easy habit to fall into; both previously triggered an "invalid return type" rejection even though the intent was clear. A `False` with no message gets a generic fallback message, same as bare `False`.
+* `numpy.bool_` (and other duck-typed booleans) are accepted anywhere a plain `bool` is (0.4.4+), recognized by type identity rather than by importing `numpy` — BOOTH stays zero-dependency.
+
 **Ordering:** an attempt is only run through `validator` if it parsed successfully **and** was not flagged ambiguous — a question that's ambiguous as asked isn't something a validator should be judging, and there is nothing to validate if the response never parsed. A validation failure is checked *before* the confidence gate: an answer that fails your validator does not get a chance to pass purely on high self-reported confidence.
 
-An exception raised inside `validator`, or a return value that isn't `bool` or `(bool, str)`, is treated as a failed validation — it never propagates out of `check()`/`acheck()`.
+An exception raised inside `validator`, or a return value that isn't one of the accepted shapes above, is treated as a failed validation — it never propagates out of `check()`/`acheck()`.
 
 `validator=None` (the default) is a true no-op: every code path this parameter introduces is unreachable if you never pass it, so existing calls are unaffected.
 
 `validator` must be **synchronous**, for both `check()` and `acheck()`. If your validation logic needs to await something (an API call, a DB lookup), resolve it yourself first and pass a plain sync closure in.
+
+The type alias for a validator function, `ValidatorFn`, is importable from the top-level package (`from booth import ValidatorFn`) for type-hinting your own validator functions.
 
 ---
 
@@ -473,7 +480,7 @@ Optional callback invoked after each attempt.
 
 #### `validator` (keyword-only, 0.4.2+)
 
-Optional `Callable[[str], bool | tuple[bool, str]]`. Runs on an attempt's answer only if that attempt parsed successfully and was not ambiguous. See [Custom validation with `validator`](#custom-validation-with-validator) above for the full contract. Must be synchronous. Default `None` — a true no-op.
+Optional `ValidatorFn` — `Callable[[str], bool | tuple[bool, str]]`. Runs on an attempt's answer only if that attempt parsed successfully and was not ambiguous. See [Custom validation with `validator`](#custom-validation-with-validator) above for the full accepted-shape contract (widened in 0.4.4 to also accept `(bool, None)`, list forms, and `numpy.bool_`). Must be synchronous. Default `None` — a true no-op.
 
 ---
 
@@ -776,9 +783,9 @@ Run the test suite:
 pytest
 ```
 
-The test suite covers the core checkpoint behavior, asynchronous API, parsing behavior, ambiguity handling, reconsideration, custom validation, evidence checking, and raw-response exposure via `result.parsed`. CI runs the full suite on push/PR across Python 3.9–3.12.
+The test suite covers the core checkpoint behavior, asynchronous API, parsing behavior, ambiguity handling, reconsideration, custom validation, evidence checking, raw-response exposure via `result.parsed`, and a dedicated regression suite for the `v0.4.4` bugfix batch. CI runs the full suite on push/PR across Python 3.9–3.12.
 
-The `parsed` tests specifically verify: the raw object matches the model's actual JSON (including cases where a field's type diverges from BOOTH's own coerced field, and cases where the model includes extra fields BOOTH doesn't use), correct behavior across `VERIFIED`/`REPAIRED`/`AMBIGUOUS`/`UNCERTAIN`, `parsed` reflecting the last successfully parsed attempt in a mixed history, `parsed=None` on total parse failure, `parsed=None` for every `check_with_evidence()` outcome, and `check()`/`acheck()` parity.
+The `v0.4.4` regression tests specifically verify: a JSON string `"false"` for `ambiguous` is not misread as `True`; a JSON boolean for `confidence` is rejected rather than silently accepted as `1.0`/`0.0`; `ValidatorFn` is importable from the top-level package; a falsy-but-present `chosen_interpretation` (`0`, `""`) is preserved rather than discarded to `None`; `numpy.bool_`-shaped validator returns are accepted; `(bool, None)` and list-shaped validator returns are accepted while genuinely malformed shapes are still rejected; confidence exactly equal to `threshold` passes on both `check()` and `acheck()`; list-wrapped JSON (`[{...}]`) still recovers via the parsing fallback; and the previously-unverified nested-brace edge case's actual behavior is now locked in by a test rather than assumed.
 
 ---
 
@@ -789,9 +796,10 @@ The `parsed` tests specifically verify: the raw object matches the model's actua
 3. **Treat ambiguity, validation, and confidence as separate, ordered checks.** A confident, validator-passing answer can still be ambiguous; a confident answer can still fail a caller's own validation rule before confidence is ever consulted.
 4. **Reconsider instead of blindly resampling.** Retries give the model an opportunity to examine its previous response — and the reason it failed (parse failure, validation failure, or low confidence) determines what the model is actually shown.
 5. **Expose, don't reinterpret.** `result.parsed` is a transparency layer over data BOOTH already has, not a second parser or validator — it shows the model's raw response rather than deciding what it should mean.
-6. **Keep evidence retrieval outside BOOTH.** Applications remain free to use their own RAG, search, database, or tool infrastructure.
-7. **Do not pretend agreement is truth.** Agreement with an answer, confidence value, custom validator, or retrieved evidence is not the same as independently proving the claim.
-8. **Stay provider-agnostic.** BOOTH works with different LLM providers because the application supplies the model-calling function.
+6. **Reject invalid data, don't silently coerce it.** An out-of-range confidence, a boolean masquerading as a confidence score, or an unrecognized value for `ambiguous` are all treated as reasons to reject the attempt — never guessed at or silently reinterpreted into something that happens not to crash. Applied consistently across every coerced field as of `v0.4.4`.
+7. **Keep evidence retrieval outside BOOTH.** Applications remain free to use their own RAG, search, database, or tool infrastructure.
+8. **Do not pretend agreement is truth.** Agreement with an answer, confidence value, custom validator, or retrieved evidence is not the same as independently proving the claim.
+9. **Stay provider-agnostic.** BOOTH works with different LLM providers because the application supplies the model-calling function.
 
 ---
 

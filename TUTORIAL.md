@@ -26,7 +26,7 @@ Check the installed version:
 import booth
 
 print(booth.__version__)
-# 0.4.3
+# 0.4.4
 ```
 
 ---
@@ -187,6 +187,8 @@ result.interpretations
 
 Ambiguous results are not automatically retried, and a `validator` is never even invoked on an ambiguous attempt — reconsidering the same question, or checking it against a custom rule, does not resolve ambiguity in the question itself.
 
+**Robustness note (0.4.4):** the model is expected to return a real JSON boolean for `ambiguous`, but BOOTH also correctly recognizes the literal strings `"true"`/`"false"` (case-insensitively) if a model outputs those instead. Any other value — a number, an unrecognized string — is treated as a parse failure rather than guessed at, since naively converting an unexpected value with Python's `bool()` can silently produce the wrong answer (`bool("false")` is `True` in Python, since any non-empty string is truthy).
+
 ---
 
 ## 5. Confidence and Retries
@@ -213,6 +215,8 @@ If the initial answer already meets the requirements:
 ```python
 result.status == booth.VERIFIED
 ```
+
+**Robustness note (0.4.4):** `confidence` is expected to be a number. If a model ever outputs a JSON boolean (`true`/`false`) for this field instead — a plausible mix-up after seeing `true`/`false` used for `ambiguous` earlier in the same schema — BOOTH rejects it rather than accepting it, because Python's `float(True) == 1.0` and `float(False) == 0.0` would otherwise silently convert it into a valid-looking confidence score. A genuine numeric string like `"0.95"` is still accepted and converted normally; only an actual boolean value is rejected.
 
 ---
 
@@ -254,6 +258,22 @@ result = booth.check(call_llm, prompt, validator=validate_amount, max_retries=1)
 
 The reason string is shown to the model verbatim on the retry prompt — a much more specific correction signal than a generic "try again."
 
+**Two additional accepted shapes (0.4.4+), because both are natural mistakes rather than edge cases:**
+
+```python
+# A None message where you don't have anything specific to say:
+def validate_simple(answer: str):
+    return (True, None) if answer else (False, None)
+
+# A list instead of a tuple — an easy habit to fall into:
+def validate_as_list(answer: str):
+    return [False, "must be numeric"]
+```
+
+Both are accepted with the identical contract as `(bool, str)`. If the second element is `None` and the validation failed, BOOTH supplies a generic fallback message, the same as a bare `False` return.
+
+**numpy/pandas booleans (0.4.4+):** if your validation logic touches numpy or pandas, a `numpy.bool_` return is accepted anywhere a plain Python `bool` is — recognized by type identity, not by importing numpy (BOOTH stays zero-dependency either way).
+
 ### Where validation fits in the order of checks
 
 For each attempt, BOOTH checks, in this order:
@@ -267,7 +287,7 @@ This means a highly confident, unambiguous answer can still be rejected and retr
 
 ### Error handling
 
-If `validator` raises an exception, or returns anything other than `bool` or `(bool, str)`, BOOTH treats that as a failed validation — it never crashes `check()`/`acheck()`:
+If `validator` raises an exception, or returns anything other than one of the accepted shapes above, BOOTH treats that as a failed validation — it never crashes `check()`/`acheck()`:
 
 ```python
 def broken_validator(answer):
@@ -278,9 +298,24 @@ result = booth.check(call_llm, prompt, validator=broken_validator, max_retries=0
 # result.attempts[0].validation_error contains the exception message
 ```
 
+A genuinely malformed shape — a 3-element list, a tuple whose first element isn't boolean-like — is still correctly rejected as an invalid type; the 0.4.4 widening only covers the two specific natural-mistake cases above, not an open-ended acceptance of anything.
+
 ### `validator=None` is a true no-op
 
 If you never pass `validator`, behavior is identical to pre-0.4.2 BOOTH — every code path this parameter introduces is simply unreachable.
+
+### Type-hinting your own validator
+
+```python
+from booth import ValidatorFn
+
+def is_valid_order_id(answer: str) -> bool:
+    return answer.strip().upper().startswith("ORD-")
+
+my_validator: ValidatorFn = is_valid_order_id
+```
+
+`ValidatorFn` is importable directly from the top-level `booth` package (fixed in 0.4.4 — it was defined in `booth.core` since 0.4.2 but not exported from the public package until now).
 
 ### Async
 
@@ -391,9 +426,10 @@ attempt.parse_ok
 attempt.error
 attempt.ambiguous
 attempt.interpretations
-attempt.passed_validation   # always True if no validator was supplied
-attempt.validation_error    # always None if no validator was supplied, or if it passed
-attempt.parsed              # this attempt's raw JSON object, None if it failed to parse
+attempt.chosen_interpretation  # preserved even when falsy (0, ""), fixed in 0.4.4
+attempt.passed_validation      # always True if no validator was supplied
+attempt.validation_error       # always None if no validator was supplied, or if it passed
+attempt.parsed                 # this attempt's raw JSON object, None if it failed to parse
 ```
 
 ### `n_attempts`
@@ -673,6 +709,7 @@ The main public result and types include:
 booth.Attempt
 booth.BoothResult
 booth.CompareFn
+booth.ValidatorFn
 ```
 
 Status constants:
