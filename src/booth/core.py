@@ -38,27 +38,13 @@ nothing else."""
 
 _JSON_RE = re.compile(r"\{[^{}]*\}")
 
-# Sentinel distinguishing "key absent" from "key present with an
-# unexpected value" — obj.get("ambiguous", False) collapses both cases
-# together, which is what let bug #1 below hide: a model outputting
-# the STRING "false" (not the JSON boolean false) for `ambiguous` was
-# silently flipped to True, because bool("false") is True in Python —
-# any non-empty string is truthy, this isn't a semantic conversion the
-# way float("0.95") is for confidence.
+# Distinguishes "key absent" from "key present but invalid".
 _MISSING = object()
 
 
 def _coerce_ambiguous(raw) -> Optional[bool]:
-    """Coerce the raw `ambiguous` value into a real bool, or return
-    None if it's not a recognizable boolean at all. A real JSON bool
-    passes through unchanged. A string is only accepted if it's
-    literally "true"/"false" (case-insensitive) — anything else
-    (a number, a list, an unrecognized string) is rejected rather than
-    guessed at via bool(), which would silently misinterpret it the
-    way bug #1 did. Rejection here means the whole attempt is treated
-    as unparseable, same as an out-of-range confidence value — refusing
-    to silently accept invalid data is the existing design principle
-    for confidence; this extends it to ambiguous."""
+    """Real bool passes through. "true"/"false" strings (any case) are
+    accepted. Anything else returns None (reject, don't guess)."""
     if isinstance(raw, bool):
         return raw
     if isinstance(raw, str):
@@ -188,16 +174,8 @@ def _parse_response(raw_text: str) -> Attempt:
         confidence = obj.get("confidence")
         if answer is None or confidence is None:
             continue
-        # Bug #2 fix, highest severity in this batch: bool is a
-        # subclass of int in Python, so float(True) == 1.0 and
-        # float(False) == 0.0 succeed silently with NO exception.
-        # Unlike confidence="0.95" (a genuine, intended numeric-string
-        # conversion), a model outputting "confidence": true is a
-        # schema violation — accepting it produces a silent false
-        # VERIFIED at maximum confidence, the exact silent-wrong-answer
-        # failure mode this whole library exists to prevent. Must be
-        # rejected BEFORE the float() conversion below, since float()
-        # itself will not raise on a bool.
+        # bool is a subclass of int, so float(True/False) succeeds
+        # silently — must reject before the float() conversion.
         if isinstance(confidence, bool):
             continue
         try:
@@ -207,19 +185,13 @@ def _parse_response(raw_text: str) -> Attempt:
         if not 0.0 <= confidence <= 1.0:
             continue
 
-        # Bug #1 fix: bool(obj.get("ambiguous", False)) would silently
-        # flip a model-output STRING "false" to True, since any
-        # non-empty string is truthy in Python. _coerce_ambiguous only
-        # accepts a real bool or a literal "true"/"false" string;
-        # anything else rejects this candidate entirely rather than
-        # guessing at it.
         raw_ambiguous = obj.get("ambiguous", _MISSING)
         if raw_ambiguous is _MISSING:
-            ambiguous = False  # key genuinely absent — same default as before
+            ambiguous = False
         else:
             coerced = _coerce_ambiguous(raw_ambiguous)
             if coerced is None:
-                continue  # present but not a recognizable boolean — reject, don't guess
+                continue
             ambiguous = coerced
 
         interpretations = obj.get("interpretations") or []
@@ -227,12 +199,7 @@ def _parse_response(raw_text: str) -> Attempt:
             interpretations = []
         interpretations = [str(i) for i in interpretations]
         chosen = obj.get("chosen_interpretation")
-        # Bug #4 fix: `if chosen else None` used a truthy check, so a
-        # genuinely-present-but-falsy value (0, "", False) was silently
-        # discarded to None instead of being stringified. `is not None`
-        # correctly distinguishes "absent/null" from "present but
-        # falsy" — the same class of bug as #1, just on a field that
-        # doesn't drive any status decision (informational only).
+        # `is not None` (not a truthy check) so 0/""/False survive.
         chosen = str(chosen) if chosen is not None else None
 
         return Attempt(
@@ -250,39 +217,21 @@ def _parse_response(raw_text: str) -> Attempt:
 
 
 def _is_boolish(value) -> bool:
-    """True for a native Python bool, AND for numpy.bool_ — recognized
-    by module+class name rather than by importing numpy, since booth
-    is zero-dependency by design. Bug #5 fix: without this,
-    isinstance(result, bool) rejects numpy.bool_ (not guaranteed to be
-    a bool subclass across numpy versions), so a validator's genuinely
-    correct pass/fail — plausible for anyone doing numeric/tabular
-    validation with numpy or pandas — gets silently reinterpreted as an
-    'invalid return type' failure, making the caller's correct logic
-    look broken through no fault of their own."""
+    """True for native bool and numpy's boolean scalar (checked by
+    type name, not by importing numpy — booth stays zero-dependency).
+    numpy >=2.0 renamed the scalar type's __name__ from "bool_" to
+    "bool", so both spellings are accepted for cross-version safety."""
     if isinstance(value, bool):
         return True
     t = type(value)
-    return t.__module__ == "numpy" and t.__name__ == "bool_"
+    return t.__module__ == "numpy" and t.__name__ in ("bool_", "bool")
 
 
 def _run_validator(
     validator: Optional[ValidatorFn], answer: Optional[str]
 ) -> Tuple[bool, Optional[str]]:
-    """Accepted return shapes, deliberately a bit wider than the
-    strict minimum, because both extra cases below are natural
-    mistakes a caller would make on a first attempt, not edge cases
-    they'd think to guard against themselves:
-      - bool (including numpy.bool_, see _is_boolish — bug #5)
-      - (bool, str)
-      - (bool, None) — "passed, no message needed" is a natural way to
-        write a plain-True return with an explicit None rather than
-        omitting the message; previously hit the strict
-        isinstance(result[1], str) check and was wrongly treated as an
-        invalid type (bug #6a).
-      - a 2-element LIST with the same (bool, str|None) shape as the
-        tuple above — [passed, message] is an easy habit to fall into
-        and was previously rejected outright by isinstance(result,
-        tuple) (bug #6b)."""
+    """Accepted shapes: bool (incl. numpy.bool_), (bool, str),
+    (bool, None), and the list form of either tuple."""
     if validator is None or answer is None:
         return True, None
     try:
@@ -382,7 +331,8 @@ def check_with_evidence(
 ) -> BoothResult:
     _validate_evidence_args(evidence_threshold)
 
-    if not answer or not evidence:
+    # 0.4.5: a whitespace-only answer is treated as empty, same as "".
+    if not answer or not answer.strip() or not evidence:
         return BoothResult(answer=answer or None, status=UNCERTAIN, confidence=None)
 
     try:
@@ -390,9 +340,12 @@ def check_with_evidence(
     except Exception:
         return BoothResult(answer=answer, status=UNCERTAIN, confidence=None)
 
-    if isinstance(raw_result, bool):
-        score = 1.0 if raw_result else 0.0
-        passed = raw_result
+    # 0.4.5: use _is_boolish so numpy.bool_ is treated as a strict
+    # pass/fail, same as validator results, instead of falling through
+    # to the float() branch below.
+    if _is_boolish(raw_result):
+        passed = bool(raw_result)
+        score = 1.0 if passed else 0.0
     else:
         try:
             score = float(raw_result)
