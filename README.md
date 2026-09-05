@@ -12,7 +12,7 @@ The name comes from the idea of a **ticket booth, toll booth, or parking/payment
 
 ## Current Status
 
-**v0.4.4**
+**v0.4.5**
 
 BOOTH currently provides:
 
@@ -81,6 +81,8 @@ If BOOTH cannot obtain an acceptable result, it returns `UNCERTAIN`.
 BOOTH also provides `check_with_evidence()` for applications that already have evidence from their own RAG, search, database, or tool pipeline.
 
 **On robustness to malformed model output:** every field BOOTH extracts from the model's JSON response is validated against its expected type before being trusted, not just parsed and used as-is. A model returning the JSON string `"false"` instead of the boolean `false` for `ambiguous`, or the boolean `true` instead of a number for `confidence`, is rejected and treated as an unparseable attempt rather than silently coerced into the wrong value — the same discipline BOOTH has always applied to an out-of-range confidence score, now applied consistently across every coerced field. See the [Changelog](CHANGELOG.md)'s `v0.4.4` entry for the specific cases this covers.
+
+**On robustness in `check_with_evidence()`:** the same "recognize duck-typed booleans, don't silently miscategorize them" discipline that `validator` got in `v0.4.4` now also applies to `compare_fn`'s return value — a `numpy.bool_` result is treated as a strict pass/fail, not coerced through `float()` into a score, and this holds across numpy versions despite numpy 2.0 renaming the underlying scalar type. A whitespace-only `answer` is also now treated as empty input, the same as `""`. See the [Changelog](CHANGELOG.md)'s `v0.4.5` entry.
 
 ---
 
@@ -225,7 +227,7 @@ result = booth.check(call_llm, prompt, validator=validate_amount)
 ```
 
 * `(bool, None)`, or the equivalent as a **list** rather than a tuple (`[bool, str]` / `[bool, None]`) — accepted with the identical contract as the tuple form above (0.4.4+). `return True, None` is a natural way to write "passed, no message needed," and `[passed, message]` is an easy habit to fall into; both previously triggered an "invalid return type" rejection even though the intent was clear. A `False` with no message gets a generic fallback message, same as bare `False`.
-* `numpy.bool_` (and other duck-typed booleans) are accepted anywhere a plain `bool` is (0.4.4+), recognized by type identity rather than by importing `numpy` — BOOTH stays zero-dependency.
+* `numpy.bool_` (and other duck-typed booleans) are accepted anywhere a plain `bool` is (0.4.4+), recognized by type identity rather than by importing `numpy` — BOOTH stays zero-dependency. This recognition works across numpy versions, including numpy >=2.0's renamed scalar type (0.4.5+).
 
 **Ordering:** an attempt is only run through `validator` if it parsed successfully **and** was not flagged ambiguous — a question that's ambiguous as asked isn't something a validator should be judging, and there is nothing to validate if the response never parsed. A validation failure is checked *before* the confidence gate: an answer that fails your validator does not get a chance to pass purely on high self-reported confidence.
 
@@ -410,7 +412,9 @@ result = booth.check_with_evidence(
 
 A score of `0.87` passes. A score of `0.62` does not.
 
-Boolean comparison results are treated as strict pass/fail values. `evidence_threshold` is not applied to boolean results.
+Boolean comparison results are treated as strict pass/fail values. `evidence_threshold` is not applied to boolean results. This includes `numpy.bool_` and other duck-typed booleans (0.4.5+) — a `compare_fn` written with numpy or pandas is treated identically to one that returns a plain Python `bool`, regardless of numpy version.
+
+An `answer` that is empty or made up entirely of whitespace is treated as missing input: `check_with_evidence()` returns `UNCERTAIN` without ever calling `compare_fn` (0.4.5+; previously only a fully empty string was caught, so a whitespace-only string like `" "` slipped through and reached `compare_fn`).
 
 `check_with_evidence()` has no `validator` concept, and its results always have `parsed=None` — it is a standalone, single-purpose comparison gate, untouched by either the `validator` or `parsed` additions.
 
@@ -437,6 +441,8 @@ VERIFIED
 That means the answer passed the supplied evidence comparison. It does **not** mean BOOTH independently established that the evidence is correct.
 
 The quality, relevance, completeness, freshness, and correctness of retrieved evidence remain the responsibility of the application. This applies with equal force when evidence is baked into a prompt as RAG context and then separately checked — the model can produce a highly confident, unambiguous, evidence-agreeing answer that is still simply wrong, if the retrieved evidence itself was wrong. Neither `check()`'s confidence check nor `check_with_evidence()`'s agreement check can catch that; only the quality of retrieval can.
+
+Note that this responsibility covers the *content* of the evidence, not how BOOTH interprets your `compare_fn`'s return value — the latter is BOOTH's job, and is what the `v0.4.5` fixes address. A list of blank or empty-but-present evidence strings is still a retrieval-quality question for your application to decide how to handle; BOOTH does not filter or judge evidence content.
 
 ---
 
@@ -480,7 +486,7 @@ Optional callback invoked after each attempt.
 
 #### `validator` (keyword-only, 0.4.2+)
 
-Optional `ValidatorFn` — `Callable[[str], bool | tuple[bool, str]]`. Runs on an attempt's answer only if that attempt parsed successfully and was not ambiguous. See [Custom validation with `validator`](#custom-validation-with-validator) above for the full accepted-shape contract (widened in 0.4.4 to also accept `(bool, None)`, list forms, and `numpy.bool_`). Must be synchronous. Default `None` — a true no-op.
+Optional `ValidatorFn` — `Callable[[str], bool | tuple[bool, str]]`. Runs on an attempt's answer only if that attempt parsed successfully and was not ambiguous. See [Custom validation with `validator`](#custom-validation-with-validator) above for the full accepted-shape contract (widened in 0.4.4 to also accept `(bool, None)`, list forms, and `numpy.bool_`; the `numpy.bool_` recognition was made cross-version-safe in 0.4.5). Must be synchronous. Default `None` — a true no-op.
 
 ---
 
@@ -531,7 +537,7 @@ Checks an answer against caller-supplied evidence. It:
 
 #### `answer`
 
-The answer being checked.
+The answer being checked. Treated as missing (returns `UNCERTAIN` without calling `compare_fn`) if it's empty or entirely whitespace (0.4.5+).
 
 #### `evidence`
 
@@ -539,11 +545,11 @@ A sequence of evidence strings already retrieved by the application.
 
 #### `compare_fn`
 
-A caller-supplied comparison function, `Callable[[str, Sequence[str]], bool | float]`. Receives `answer` and `evidence`, returns either a boolean or a score from `0.0` to `1.0`.
+A caller-supplied comparison function, `Callable[[str, Sequence[str]], bool | float]`. Receives `answer` and `evidence`, returns either a boolean (including `numpy.bool_`, recognized across numpy versions as of 0.4.5) or a score from `0.0` to `1.0`.
 
 #### `evidence_threshold`
 
-Minimum score required when `compare_fn` returns a float. Default `0.7`. Separate from `check()`'s `threshold` because the two values represent different things.
+Minimum score required when `compare_fn` returns a float. Default `0.7`. Separate from `check()`'s `threshold` because the two values represent different things. Never applied to a boolean-shaped `compare_fn` result, native or `numpy.bool_`.
 
 ---
 
@@ -639,7 +645,7 @@ BOOTH could not obtain an acceptable result. This can occur because:
 * the model remained below the confidence threshold
 * every response failed to parse
 * an answer that did parse and was confident enough still failed the supplied `validator` on every attempt
-* the answer or evidence supplied to `check_with_evidence()` was empty
+* the `answer` or `evidence` supplied to `check_with_evidence()` was empty, or `answer` was whitespace-only (0.4.5+)
 * the evidence comparison function raised an exception
 * the evidence comparison function returned an invalid score
 
@@ -647,7 +653,7 @@ Check `result.method` to tell these apart.
 
 ### `BLOCKED`
 
-The supplied evidence comparison did not pass — a float score below `evidence_threshold`, or a boolean `False` from `compare_fn`.
+The supplied evidence comparison did not pass — a float score below `evidence_threshold`, or a boolean `False` (native or `numpy.bool_`) from `compare_fn`.
 
 ---
 
@@ -667,6 +673,7 @@ BOOTH currently does **not**:
 * compare multiple independent LLMs
 * provide calibrated confidence probabilities
 * guarantee that retrieved evidence is correct, complete, relevant, or current
+* filter, deduplicate, or otherwise judge the quality of `evidence` content — including blank or empty-but-present entries — beyond checking that the sequence itself isn't empty
 * guarantee that a custom `validator` is itself correct — a validator can pass a wrong answer or reject a correct one, same as any other application-supplied rule
 * validate or enforce a schema on `result.parsed` — it is exposed as-is, entirely unvalidated
 * replace application-specific validation or safety systems (though `validator` gives you a documented hook to plug your own logic into BOOTH's retry loop rather than reimplementing that loop yourself)
@@ -695,7 +702,7 @@ Ambiguity detection depends on the model recognizing the ambiguity. BOOTH can de
 
 ### Evidence quality
 
-Evidence checking is only as useful as the evidence and comparison function supplied by the application. If the evidence is wrong, incomplete, outdated, or unrelated, BOOTH does not independently detect that. Likewise, a weak `compare_fn` can produce a misleading result. This includes the case where retrieved evidence is baked into the model's own prompt as RAG context — a wrong document can make the model's answer both more *confident* and more evidence-*consistent*, without becoming more correct.
+Evidence checking is only as useful as the evidence and comparison function supplied by the application. If the evidence is wrong, incomplete, outdated, unrelated, or made up of blank/near-empty entries, BOOTH does not independently detect or filter that — only a fully empty `evidence` sequence is rejected. Likewise, a weak `compare_fn` can produce a misleading result. This includes the case where retrieved evidence is baked into the model's own prompt as RAG context — a wrong document can make the model's answer both more *confident* and more evidence-*consistent*, without becoming more correct.
 
 ### No automatic retrieval
 
@@ -783,9 +790,11 @@ Run the test suite:
 pytest
 ```
 
-The test suite covers the core checkpoint behavior, asynchronous API, parsing behavior, ambiguity handling, reconsideration, custom validation, evidence checking, raw-response exposure via `result.parsed`, and a dedicated regression suite for the `v0.4.4` bugfix batch. CI runs the full suite on push/PR across Python 3.9–3.12.
+The test suite covers the core checkpoint behavior, asynchronous API, parsing behavior, ambiguity handling, reconsideration, custom validation, evidence checking, raw-response exposure via `result.parsed`, a dedicated regression suite for the `v0.4.4` bugfix batch, and a dedicated regression suite for the `v0.4.5` bugfix batch. CI runs the full suite on push/PR across Python 3.9–3.12.
 
 The `v0.4.4` regression tests specifically verify: a JSON string `"false"` for `ambiguous` is not misread as `True`; a JSON boolean for `confidence` is rejected rather than silently accepted as `1.0`/`0.0`; `ValidatorFn` is importable from the top-level package; a falsy-but-present `chosen_interpretation` (`0`, `""`) is preserved rather than discarded to `None`; `numpy.bool_`-shaped validator returns are accepted; `(bool, None)` and list-shaped validator returns are accepted while genuinely malformed shapes are still rejected; confidence exactly equal to `threshold` passes on both `check()` and `acheck()`; list-wrapped JSON (`[{...}]`) still recovers via the parsing fallback; and the previously-unverified nested-brace edge case's actual behavior is now locked in by a test rather than assumed.
+
+The `v0.4.5` regression tests specifically verify: a `numpy.bool_(False)` result from `compare_fn` produces `BLOCKED`, not `VERIFIED`, at `evidence_threshold=0.0`; the shared boolish-detection helper recognizes numpy's boolean scalar type under both its pre-2.0 and post-2.0 `__name__` (`"bool_"` and `"bool"`), since numpy 2.0 renamed the type and the original 0.4.4 helper only matched the old name; a `numpy.bool_` result from `compare_fn` is never compared against `evidence_threshold`, matching native-`bool` behavior; and a whitespace-only `answer` returns `UNCERTAIN` without `compare_fn` ever being invoked.
 
 ---
 
@@ -796,10 +805,11 @@ The `v0.4.4` regression tests specifically verify: a JSON string `"false"` for `
 3. **Treat ambiguity, validation, and confidence as separate, ordered checks.** A confident, validator-passing answer can still be ambiguous; a confident answer can still fail a caller's own validation rule before confidence is ever consulted.
 4. **Reconsider instead of blindly resampling.** Retries give the model an opportunity to examine its previous response — and the reason it failed (parse failure, validation failure, or low confidence) determines what the model is actually shown.
 5. **Expose, don't reinterpret.** `result.parsed` is a transparency layer over data BOOTH already has, not a second parser or validator — it shows the model's raw response rather than deciding what it should mean.
-6. **Reject invalid data, don't silently coerce it.** An out-of-range confidence, a boolean masquerading as a confidence score, or an unrecognized value for `ambiguous` are all treated as reasons to reject the attempt — never guessed at or silently reinterpreted into something that happens not to crash. Applied consistently across every coerced field as of `v0.4.4`.
-7. **Keep evidence retrieval outside BOOTH.** Applications remain free to use their own RAG, search, database, or tool infrastructure.
+6. **Reject invalid data, don't silently coerce it.** An out-of-range confidence, a boolean masquerading as a confidence score, or an unrecognized value for `ambiguous` are all treated as reasons to reject the attempt — never guessed at or silently reinterpreted into something that happens not to crash. Applied consistently across every coerced field as of `v0.4.4`, and applied to `check_with_evidence()`'s `compare_fn` return value as of `v0.4.5`.
+7. **Keep evidence retrieval outside BOOTH.** Applications remain free to use their own RAG, search, database, or tool infrastructure. This includes evidence *content* quality — BOOTH checks agreement and rejects malformed comparison results, but does not judge or filter the evidence itself.
 8. **Do not pretend agreement is truth.** Agreement with an answer, confidence value, custom validator, or retrieved evidence is not the same as independently proving the claim.
 9. **Stay provider-agnostic.** BOOTH works with different LLM providers because the application supplies the model-calling function.
+10. **Fix confirmed bugs, not plausible-sounding ones.** Every fix in this project starts from a reproduced failure, not an intuition about what "seems like it could be a problem." A change that would only guard against a hypothetical, undemonstrated failure mode is deliberately left out of a release, even when it pattern-matches a fix that was just made elsewhere.
 
 ---
 

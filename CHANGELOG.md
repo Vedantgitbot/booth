@@ -9,6 +9,67 @@ surface bump the patch version.
 
 Nothing yet.
 
+## [v0.4.5] — bugfix batch: check_with_evidence() boolish handling, whitespace-answer guard
+
+Two confirmed bugs in `check_with_evidence()`, fixed together as one
+release. Both are behavioral fixes to existing functionality — nothing
+here adds a new public function or parameter. As with `v0.4.4`, every
+fix here was verified by writing a failing test against the actual
+behavior first, not assumed from reading the code, and a third,
+version-compatibility issue was caught only because of that same
+verification step.
+
+- **`compare_fn` returning `numpy.bool_` not recognized as boolean.**
+  `check_with_evidence()` used a bare `isinstance(raw_result, bool)`
+  check, while `validator`'s equivalent check (`_is_boolish()`, added in
+  `v0.4.4`) already correctly widened this to also accept `numpy.bool_`.
+  A `compare_fn` written with numpy or pandas — a natural choice for
+  numeric or array-based similarity comparisons — that returned
+  `numpy.bool_(False)` fell through to the float-coercion branch
+  instead, was coerced to `0.0`, and at `evidence_threshold=0.0` could
+  resolve to `VERIFIED` instead of `BLOCKED` — a silent false-positive
+  in the exact failure mode this library exists to prevent. Fixed by
+  reusing the shared `_is_boolish()` helper in `check_with_evidence()`
+  instead of the bare `isinstance` check, so both entry points now share
+  one boolish-detection implementation instead of two independent ones
+  that could drift apart.
+- **`_is_boolish()` itself did not recognize numpy's boolean scalar type
+  across numpy versions (found while writing the regression test for
+  the fix above).** numpy 2.0 renamed the scalar boolean type, so that
+  `type(np.bool_(x)).__name__` is `"bool"` on numpy >=2.0 but was
+  `"bool_"` on numpy <2.0. The `v0.4.4` implementation of
+  `_is_boolish()` only matched the pre-2.0 name, so on current numpy
+  installs it silently failed to recognize `numpy.bool_` values at all
+  — meaning the intended `v0.4.4` widening for `validator` was already
+  not taking effect on numpy >=2.0 before this fix, in addition to the
+  bug above. `_is_boolish()` now accepts both `"bool_"` and `"bool"`
+  under the `numpy` module, verified directly against an installed
+  numpy 2.4.4 in addition to the new regression test.
+- **Whitespace-only `answer` bypassing the empty-input guard.**
+  `check_with_evidence()`'s guard was `if not answer or not evidence`,
+  which correctly catches `""` but not a whitespace-only string like
+  `" "`, since `bool(" ")` is `True` in Python. A whitespace-only answer
+  was silently passed through to the caller's `compare_fn` instead of
+  being treated as missing input. Fixed by additionally checking
+  `not answer.strip()`. Lower severity than the two bugs above — it
+  does not reopen a previously-protected failure mode, since the
+  outcome for a degenerate `" "` input was already undefined territory
+  dependent on the caller's own `compare_fn` — but a one-line fix worth
+  including in the same batch.
+- **One candidate issue considered and deliberately not fixed:**
+  `evidence` containing only blank or whitespace-only strings (e.g.
+  `evidence=[" ", ""]`) is not specially detected; only a fully empty
+  `evidence` sequence is rejected. This is structurally similar to the
+  whitespace-`answer` bug above, but `evidence` content quality is
+  explicitly the caller's documented responsibility (README, "Important:
+  What Evidence Checking Means"), unlike `answer`, which BOOTH itself
+  hands to `compare_fn` as the thing being judged. No test demonstrates
+  this as an actual failure for any caller. Treated the same way the
+  `v0.4.4` batch treated the (rejected) markdown-fence-stripping
+  suggestion: a structurally-plausible-sounding fix is not the same as
+  a confirmed bug, and speculative hardening here would exceed BOOTH's
+  stated scope rather than fix something broken.
+
 ## [v0.4.4] — bugfix batch: silent-coercion fixes, missing export, validator-contract widening
 
 Six confirmed bugs, fixed together as one release. All are behavioral
@@ -55,7 +116,9 @@ inspection, and every fix has a dedicated regression test.
   pandas for numeric/tabular checks could have its genuinely correct
   pass/fail silently reinterpreted as an "invalid return type" failure.
   New `_is_boolish()` recognizes `numpy.bool_` by module and class name
-  rather than by importing numpy — BOOTH stays zero-dependency.
+  rather than by importing numpy — BOOTH stays zero-dependency. (Note:
+  the class-name check here only matched numpy's pre-2.0 naming; see the
+  `v0.4.5` entry above for the cross-version fix.)
 - **`validator`'s `(bool, str)` tuple check too strict for two natural
   mistakes.** `return True, None` — a natural way to write "passed, no
   message needed" — previously failed because the second element had
@@ -215,7 +278,8 @@ inspection, and every fix has a dedicated regression test.
   (not blind resampling) when confidence is below a configurable
   threshold. `VERIFIED` / `REPAIRED` / `UNCERTAIN` statuses.
 
-[Unreleased]: https://github.com/Vedantgitbot/booth/compare/v0.4.4...HEAD
+[Unreleased]: https://github.com/Vedantgitbot/booth/compare/v0.4.5...HEAD
+[v0.4.5]: https://github.com/Vedantgitbot/booth/releases/tag/v0.4.5
 [v0.4.4]: https://github.com/Vedantgitbot/booth/releases/tag/v0.4.4
 [v0.4.3]: https://github.com/Vedantgitbot/booth/releases/tag/v0.4.3
 [v0.4.2]: https://github.com/Vedantgitbot/booth/releases/tag/v0.4.2

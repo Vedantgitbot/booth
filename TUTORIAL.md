@@ -26,7 +26,7 @@ Check the installed version:
 import booth
 
 print(booth.__version__)
-# 0.4.4
+# 0.4.5
 ```
 
 ---
@@ -272,7 +272,7 @@ def validate_as_list(answer: str):
 
 Both are accepted with the identical contract as `(bool, str)`. If the second element is `None` and the validation failed, BOOTH supplies a generic fallback message, the same as a bare `False` return.
 
-**numpy/pandas booleans (0.4.4+):** if your validation logic touches numpy or pandas, a `numpy.bool_` return is accepted anywhere a plain Python `bool` is — recognized by type identity, not by importing numpy (BOOTH stays zero-dependency either way).
+**numpy/pandas booleans (0.4.4+, cross-version-safe as of 0.4.5):** if your validation logic touches numpy or pandas, a `numpy.bool_` return is accepted anywhere a plain Python `bool` is — recognized by type identity, not by importing numpy (BOOTH stays zero-dependency either way). numpy 2.0 renamed the underlying scalar type so that `type(np.bool_(x)).__name__` is `"bool"` instead of the pre-2.0 `"bool_"`; BOOTH's detection recognizes both names, so this works regardless of your installed numpy version.
 
 ### Where validation fits in the order of checks
 
@@ -606,7 +606,9 @@ result = booth.check_with_evidence(
 )
 ```
 
-A score of `0.87` produces `VERIFIED`; a score below `0.8` produces `BLOCKED`. Boolean results are always treated as strict pass/fail values — `evidence_threshold` is not applied to them.
+A score of `0.87` produces `VERIFIED`; a score below `0.8` produces `BLOCKED`. Boolean results are always treated as strict pass/fail values — `evidence_threshold` is not applied to them. This applies equally to a `numpy.bool_` returned from `compare_fn` (0.4.5+): if your comparison logic is written with numpy or pandas, a `numpy.bool_(False)` is treated as a strict fail rather than being coerced into a `0.0` score and re-checked against `evidence_threshold`. This recognition is cross-version-safe — numpy 2.0 renamed the underlying scalar type, and BOOTH accounts for both the old and new names.
+
+An `answer` that is empty or entirely whitespace is treated as missing: `check_with_evidence()` returns `UNCERTAIN` without calling `compare_fn` at all (0.4.5+; previously only a fully empty string like `""` was caught, not a whitespace-only string like `" "`).
 
 ### Important
 
@@ -618,6 +620,8 @@ A score of `0.87` produces `VERIFIED`; a score below `0.8` produces `BLOCKED`. B
 * performs no retries
 
 The application is responsible for retrieving the evidence and deciding how evidence should be compared. Passing evidence to a model as RAG context and then separately confirming the answer agrees with it does not establish that the evidence itself was correct — a wrong document can produce a confident, evidence-consistent, still-wrong answer.
+
+This also means BOOTH does not filter or judge the *content* of the `evidence` sequence you pass in — for example, a list containing blank or whitespace-only strings is not specially detected; only a fully empty sequence (`[]`) is rejected. Deciding what counts as usable evidence remains your application's responsibility, same as retrieval itself.
 
 ---
 
@@ -686,7 +690,7 @@ In particular:
 * `result.parsed` exposes the model's raw output exactly as sent — BOOTH does not validate or sanitize any extra fields it contains
 * evidence checking only measures agreement with supplied evidence
 * BOOTH does not verify whether the evidence itself is correct — including when that evidence was fed to the model as RAG context before the model answered
-* evidence retrieval is handled by the application
+* evidence retrieval is handled by the application, including filtering out low-quality entries such as blank or near-empty evidence strings — BOOTH only rejects a fully empty evidence sequence
 * the quality of `compare_fn` directly affects evidence-checking results
 * `check_with_evidence()` does not automatically combine its result with a previous `check()` result, and has no `validator` or `parsed` of its own
 * each retry can increase LLM cost and latency — this applies to validator-driven retries the same as confidence-driven ones
