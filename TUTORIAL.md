@@ -678,22 +678,68 @@ print(ask("What is the capital of France?"))
 
 ## 13. Limitations
 
-BOOTH is a checkpoint layer, not a guarantee of factual correctness.
+BOOTH is a checkpoint layer, not a guarantee of factual correctness. This section is the honest, complete account — if you're deciding whether BOOTH fits your use case, this is the place to read closely.
 
-In particular:
+### What BOOTH does not do
 
-* model confidence is self-reported
-* ambiguity detection depends on the model
-* a confident model can still be wrong
-* retries do not guarantee correction
-* a `validator` is only as correct as the logic you give it — BOOTH enforces it consistently, but cannot judge whether the rule itself is right for your use case
+BOOTH does **not**:
+
+* guarantee factual correctness or independently establish truth
+* automatically browse the web, perform RAG, retrieve evidence, or choose a vector database or comparison method
+* retry evidence retrieval, or manage a tool-calling loop
+* compare multiple independent LLMs against each other
+* provide calibrated confidence probabilities — a model's self-reported `0.9` is not a real 90% chance of correctness
+* guarantee that retrieved evidence is correct, complete, relevant, or current
+* filter, deduplicate, or otherwise judge the quality of `evidence` content — including blank or empty-but-present entries — beyond checking that the sequence itself isn't empty
+* guarantee that a custom `validator` is itself correct — a validator can pass a wrong answer or reject a correct one, same as any other application-supplied rule
+* validate or enforce a schema on `result.parsed` — it is exposed as-is, entirely unvalidated
+* replace application-specific validation or safety systems (though `validator` gives you a documented hook to plug your own logic into BOOTH's retry loop rather than reimplementing that loop yourself)
+
+BOOTH is a **checkpoint library**, not an LLM framework, search engine, RAG framework, or autonomous verification system.
+
+### What evidence checking actually means
+
+`check_with_evidence()` checks **agreement with the evidence supplied to it** — it does not establish that the evidence itself is true.
+
+If your application retrieves an incorrect document (e.g. `"Digital downloads are never eligible for refunds."`) and your `compare_fn` determines the answer agrees with it, BOOTH can return `VERIFIED`. That means the answer passed the supplied comparison — it does **not** mean BOOTH independently confirmed the evidence was correct.
+
+This holds with equal force when evidence is baked into a prompt as RAG context and then separately checked: the model can produce a highly confident, unambiguous, evidence-agreeing answer that is still simply wrong, if the retrieved evidence itself was wrong. Neither `check()`'s confidence check nor `check_with_evidence()`'s agreement check can catch that — only the quality of your retrieval can. The same applies to evidence *content* quality more generally: a list containing blank or whitespace-only strings is not specially detected by BOOTH; only a fully empty sequence (`[]`) is rejected. Deciding what counts as usable evidence remains your application's responsibility.
+
+### No automatic reconciliation between check() and check_with_evidence()
+
+`check_with_evidence()` is a standalone evidence checkpoint. It does not automatically consume or modify the result of a prior `check()` or `acheck()` call. If you use both together, your application decides how to combine the two results — including whether a `BLOCKED` evidence result should override an otherwise-`VERIFIED` text-confidence result. BOOTH's own `max_retries` only bounds a single `check()`/`acheck()` call; it has no visibility into retries you build across multiple calls.
+
+```python
+b_result = booth.check(call_llm, prompt)
+
+if b_result.ok:
+    a_result = booth.check_with_evidence(b_result.answer, evidence, compare_fn)
+    if a_result.ok:
+        print(a_result.answer)
+```
+
+**This is the single most common point of confusion in practice**, so it's worth being explicit: if you log or display `b_result.status` and `a_result.status` side by side, you can end up with something that reads like a contradiction — `status: VERIFIED` next to `evidence_status: BLOCKED` — even though nothing is actually wrong. They are two independent `BoothResult` objects from two independent checks, not one combined verdict. If you want a single final status, you need to compute it yourself, e.g.:
+
+```python
+final_status = a_result.status if not a_result.ok else b_result.status
+```
+
+BOOTH deliberately doesn't make this decision for you, because the right combination policy depends on your application (should a weak `compare_fn` score be allowed to override a confident, well-formed answer? that's a call only you can make for your use case).
+
+### Other limitations
+
+* model confidence is self-reported and not independently calibrated
+* ambiguity detection depends on the model recognizing the ambiguity — it can also mistake its own uncertainty for ambiguity
+* a confident model can still be wrong; retries do not guarantee correction
 * `result.parsed` exposes the model's raw output exactly as sent — BOOTH does not validate or sanitize any extra fields it contains
-* evidence checking only measures agreement with supplied evidence
-* BOOTH does not verify whether the evidence itself is correct — including when that evidence was fed to the model as RAG context before the model answered
-* evidence retrieval is handled by the application, including filtering out low-quality entries such as blank or near-empty evidence strings — BOOTH only rejects a fully empty evidence sequence
 * the quality of `compare_fn` directly affects evidence-checking results
-* `check_with_evidence()` does not automatically combine its result with a previous `check()` result, and has no `validator` or `parsed` of its own
 * each retry can increase LLM cost and latency — this applies to validator-driven retries the same as confidence-driven ones
+
+### When BOOTH is (and isn't) the right tool
+
+BOOTH earns its keep on tasks where correctness is fuzzy, subjective, or genuinely hard to check cheaply — open-ended factual QA, summarization, extraction, RAG-answer grounding. It adds a self-reported confidence signal and a genuine reconsideration loop where you otherwise have no cheap way to know if an answer is trustworthy.
+
+It is very likely the wrong tool for tasks with a deterministic, checkable answer — algorithmic problems, exact string/numeric matches, anything you can verify with a one-line assertion. Wrapping an LLM's guess for something like a Two Sum solution in `booth.check()` gets you a self-reported confidence score for a problem that has no ambiguity worth detecting and no fuzziness worth reconsidering — `assert result == expected` will catch a wrong answer faster and more reliably than a confidence threshold ever will, because a model can be confidently wrong and BOOTH has no way to know that (see "What evidence checking actually means" above — the same principle applies to confidence checking).
 
 ---
 
