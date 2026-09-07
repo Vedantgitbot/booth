@@ -56,6 +56,22 @@ def _coerce_ambiguous(raw) -> Optional[bool]:
     return None
 
 
+def _is_async_callable(fn) -> bool:
+    """True for a plain async def function, for functools.partial
+    wrapping one (inspect.iscoroutinefunction already unwraps partial
+    internally, since Python 3.8), and for an object whose __call__ is
+    itself async def — the last case plain iscoroutinefunction(fn)
+    misses, since fn itself is a normal instance, not a coroutine
+    function. A synchronous __call__ that happens to return an
+    awaitable at runtime is intentionally NOT detected here — there is
+    no signature-level way to tell that apart from an ordinary sync
+    callable without actually calling it."""
+    return (
+        inspect.iscoroutinefunction(fn)
+        or inspect.iscoroutinefunction(getattr(fn, "__call__", None))
+    )
+
+
 @dataclass
 class Attempt:
     raw_text: str
@@ -238,6 +254,20 @@ def _run_validator(
         result = validator(answer)
     except Exception as e:
         return False, f"Validator raised {type(e).__name__}: {e}"
+
+    # 0.4.6: validator must be synchronous. An async def validator
+    # called above produces a coroutine that would otherwise leak a
+    # "coroutine was never awaited" RuntimeWarning once discarded by
+    # the generic invalid-type branch below. Close it explicitly and
+    # give a specific, actionable message instead of the generic one.
+    if inspect.iscoroutine(result):
+        result.close()
+        return False, (
+            "Validator returned a coroutine — validator must be "
+            "synchronous. If your check needs to await something, "
+            "resolve it before calling check()/acheck() and pass a "
+            "plain sync function."
+        )
 
     if _is_boolish(result):
         passed = bool(result)
@@ -427,10 +457,15 @@ async def acheck(
     *,
     validator: Optional[ValidatorFn] = None,
 ) -> BoothResult:
-    if not inspect.iscoroutinefunction(call_fn):
+    # 0.4.6: _is_async_callable also recognizes an object whose
+    # __call__ is itself async def, not just a plain async def
+    # function or a functools.partial wrapping one (the latter was
+    # already handled correctly by inspect.iscoroutinefunction itself).
+    if not _is_async_callable(call_fn):
         raise TypeError(
-            "acheck() requires an async call_fn (async def ... -> str). "
-            "Use check() for a synchronous call_fn."
+            "acheck() requires an async call_fn (async def ... -> str, "
+            "or an object with an async def __call__). Use check() for "
+            "a synchronous call_fn."
         )
     _validate_args(threshold, max_retries)
 
