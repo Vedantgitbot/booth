@@ -10,7 +10,7 @@ The name comes from a **ticket booth, toll booth, or parking/payment booth**: it
 
 ## Current Status
 
-**v0.4.5**
+**v0.4.6**
 
 BOOTH currently provides:
 
@@ -18,7 +18,7 @@ BOOTH currently provides:
 * self-reported confidence checking, with genuine reconsideration retries — not blind resampling
 * an optional caller-supplied `validator` for custom pass/fail rules, with its own dedicated retry prompt
 * separate, correctly-targeted retry handling for responses that failed to parse at all
-* synchronous and asynchronous APIs (`check()` / `acheck()`)
+* synchronous and asynchronous APIs (`check()` / `acheck()`), including callable-object support for both — a class instance with a sync `__call__` for `check()`, or an `async def __call__` for `acheck()`
 * `check_with_evidence()` for checking an answer against evidence your own RAG/retrieval pipeline already pulled
 * structured results, including `result.method` (which mechanism actually produced this outcome) and `result.parsed` (the model's raw, uncoerced JSON)
 * full attempt history for every retry
@@ -144,7 +144,7 @@ result = booth.check(
 )
 ```
 
-`validator` can return `True`/`False`, `(bool, str)` with a specific failure reason shown to the model verbatim on retry, or the `(bool, None)` / list-shaped equivalents. `numpy.bool_` and similar duck-typed booleans are recognized natively — BOOTH stays zero-dependency, and this works across numpy versions.
+`validator` can return `True`/`False`, `(bool, str)` with a specific failure reason shown to the model verbatim on retry, or the `(bool, None)` / list-shaped equivalents. `numpy.bool_` and similar duck-typed booleans are recognized natively — BOOTH stays zero-dependency, and this works across numpy versions. `validator` must always be synchronous — an accidentally-`async def` validator is rejected cleanly with a specific message, not silently mishandled.
 
 Validation runs after the ambiguity check and *before* the confidence check — a highly confident answer still gets rejected and retried if it fails your rule.
 
@@ -216,6 +216,8 @@ async def main():
 asyncio.run(main())
 ```
 
+`call_fn` doesn't have to be a plain function — `check()` accepts any synchronous callable, including a class instance with a `__call__` method, and `acheck()` accepts a plain `async def` function, a `functools.partial` wrapping one, or an object whose `__call__` is itself `async def`. See the [Tutorial](TUTORIAL.md#10-async-usage) for the one case that's intentionally not supported.
+
 ---
 
 ### Evidence agreement checking
@@ -261,7 +263,7 @@ booth.check(
 )
 ```
 
-* **`call_fn`** — `Callable[[str], str]`, receives a prompt, returns the model's raw response.
+* **`call_fn`** — `Callable[[str], str]`, receives a prompt, returns the model's raw response. Any synchronous callable works, including a callable class instance.
 * **`prompt`** — the original application or user prompt.
 * **`threshold`** — minimum confidence to accept an unambiguous, validator-passing answer. Default `0.7`.
 * **`max_retries`** — retries after the initial attempt. Default `1`.
@@ -282,7 +284,7 @@ await booth.acheck(
 )
 ```
 
-Async equivalent of `check()`. `validator` and `on_attempt` may still be synchronous or async respectively; `validator` itself is always required to be synchronous.
+Async equivalent of `check()`. `call_fn` may be a plain `async def` function, a `functools.partial` wrapping one, or an object with an `async def __call__` (0.4.6+). `validator` and `on_attempt` may still be synchronous or async respectively; `validator` itself is always required to be synchronous.
 
 ### `booth.check_with_evidence()`
 

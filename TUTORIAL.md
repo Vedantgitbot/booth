@@ -26,7 +26,7 @@ Check the installed version:
 import booth
 
 print(booth.__version__)
-# 0.4.5
+# 0.4.6
 ```
 
 ---
@@ -83,6 +83,18 @@ def call_llm(prompt: str) -> str:
     response = client.chat.completions.create(...)
     return response.choices[0].message.content
 ```
+
+`call_fn` doesn't have to be a plain function — any synchronous callable works, including a class instance with a `__call__` method:
+
+```python
+class MyClient:
+    def __call__(self, prompt: str) -> str:
+        return self._client.chat.completions.create(...).choices[0].message.content
+
+result = booth.check(MyClient(), "What is the capital of France?")
+```
+
+**Robustness note (0.4.6):** a callable object whose `__call__` is *synchronous* but internally returns an awaitable (e.g. `def __call__(self, prompt): return some_async_operation(prompt)`) is intentionally not treated as an async `call_fn` for `acheck()` — there's no reliable way to detect that pattern from the callable's signature alone, without actually calling it. See [section 10](#10-async-usage) for what `acheck()` does support.
 
 ### `prompt`
 
@@ -299,6 +311,8 @@ result = booth.check(call_llm, prompt, validator=broken_validator, max_retries=0
 ```
 
 A genuinely malformed shape — a 3-element list, a tuple whose first element isn't boolean-like — is still correctly rejected as an invalid type; the 0.4.4 widening only covers the two specific natural-mistake cases above, not an open-ended acceptance of anything.
+
+**Robustness note (0.4.6):** `validator` must always be synchronous (see the "Async" subsection below). If you accidentally pass an `async def` validator, BOOTH detects the resulting coroutine, closes it, and rejects it as a clean validation failure with a specific message telling you the validator must be synchronous. Earlier versions already rejected this correctly as an invalid return type, but left the coroutine unclosed, which leaked a `RuntimeWarning: coroutine '...' was never awaited` to stderr on every occurrence — that warning no longer appears.
 
 ### `validator=None` is a true no-op
 
@@ -562,6 +576,35 @@ async def ask(prompt: str):
 
 The async function has the same behavior as `check()` but expects an async `call_fn`. `on_attempt` can also be asynchronous when using `acheck()`. `validator`, as covered in section 6, must always be synchronous regardless of which entry point you use. `result.parsed` behaves identically on both.
 
+### What counts as an async `call_fn` (0.4.6)
+
+`acheck()` accepts, in addition to a plain `async def` function:
+
+```python
+import functools
+
+# functools.partial wrapping an async function — already worked
+# correctly before 0.4.6, since inspect.iscoroutinefunction unwraps
+# functools.partial internally (a stdlib behavior since Python 3.8):
+async def call_llm(prompt: str, system: str = "") -> str:
+    ...
+
+wrapped = functools.partial(call_llm, system="be concise")
+result = await booth.acheck(wrapped, "What is the capital of France?")
+
+# An object whose __call__ is itself `async def` — a common pattern
+# for a rate-limited or stateful client wrapper (fixed in 0.4.6; a
+# plain inspect.iscoroutinefunction(obj) check misses this, since obj
+# itself is a normal instance, not a coroutine function):
+class MyAsyncClient:
+    async def __call__(self, prompt: str) -> str:
+        return await self._client.chat.completions.create(...)
+
+result = await booth.acheck(MyAsyncClient(), "What is the capital of France?")
+```
+
+**What's intentionally not supported:** a callable object with a *synchronous* `__call__` that happens to return an awaitable internally (`def __call__(self, prompt): return some_coroutine`). There's no way to detect that from the callable's signature alone without actually calling it first, which `acheck()` deliberately doesn't do speculatively. Use an `async def __call__` or a plain `async def` function instead — `acheck()` will raise `TypeError` immediately for a sync callable of any kind, rather than accepting it and misbehaving later.
+
 ---
 
 ## 11. Evidence Checking
@@ -693,6 +736,7 @@ BOOTH does **not**:
 * filter, deduplicate, or otherwise judge the quality of `evidence` content — including blank or empty-but-present entries — beyond checking that the sequence itself isn't empty
 * guarantee that a custom `validator` is itself correct — a validator can pass a wrong answer or reject a correct one, same as any other application-supplied rule
 * validate or enforce a schema on `result.parsed` — it is exposed as-is, entirely unvalidated
+* detect a synchronous callable that happens to return an awaitable internally — see [section 10](#10-async-usage) for why this is intentionally out of scope
 * replace application-specific validation or safety systems (though `validator` gives you a documented hook to plug your own logic into BOOTH's retry loop rather than reimplementing that loop yourself)
 
 BOOTH is a **checkpoint library**, not an LLM framework, search engine, RAG framework, or autonomous verification system.

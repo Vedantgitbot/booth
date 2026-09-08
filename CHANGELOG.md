@@ -9,6 +9,68 @@ surface bump the patch version.
 
 Nothing yet.
 
+## [v0.4.6] — bugfix batch: callable compatibility hardening
+
+Two confirmed bugs in async-callable dispatch, fixed together as one
+release, themed around Python calling-convention edge cases rather than
+BOOTH's own decision logic. No new public function, parameter, or
+status. As with `v0.4.4`/`v0.4.5`, every fix here was verified against
+actual Python behavior before being written, and two related
+candidates were investigated and explicitly declined rather than
+folded in speculatively.
+
+- **`acheck()` rejecting an object whose `__call__` is itself
+  `async def`.** `inspect.iscoroutinefunction(call_fn)` returns `False`
+  for a class instance implementing `async def __call__`, even though
+  calling the instance does produce a coroutine — the check only
+  recognizes the function/method itself as a coroutine function, not
+  an instance whose dunder method is one. A caller wrapping an async
+  LLM client in a class (a common pattern — e.g. a stateful or
+  rate-limited client wrapper) was incorrectly rejected with
+  `TypeError`. Fixed with a new `_is_async_callable()` helper, used in
+  place of the bare `inspect.iscoroutinefunction()` check in `acheck()`:
+  recognizes a plain `async def` function, `functools.partial` wrapping
+  one, and an object with `async def __call__`.
+- **Leaked `RuntimeWarning` when an `async def` validator is passed by
+  mistake.** `_run_validator()` already correctly rejected a coroutine
+  return value as an invalid type — the validation *contract* was never
+  broken — but the coroutine object was created and then discarded
+  without being awaited or closed, so Python emitted
+  `RuntimeWarning: coroutine '...' was never awaited` to stderr on every
+  occurrence. Fixed by detecting `inspect.iscoroutine(result)`
+  explicitly, closing it, and returning a specific, actionable message
+  ("validator must be synchronous...") instead of the generic
+  invalid-type one. Behavior (`False`, a message) is unchanged; only
+  the warning noise and message specificity changed.
+- **Two related candidates investigated and explicitly declined:**
+  - `functools.partial` wrapping an async function was suspected as a
+    possible cross-version compatibility gap (BOOTH supports Python
+    3.9–3.12). Verified directly against CPython's `inspect` source:
+    `inspect.iscoroutinefunction()` already unwraps `functools.partial`
+    internally via `functools._unwrap_partial()`, a behavior present
+    since Python 3.8 — predating BOOTH's entire supported range. No fix
+    needed; a positive regression test locks this in against a future
+    change accidentally breaking it, rather than treating it as newly
+    fixed.
+  - A callable object with a *synchronous* `__call__` that internally
+    returns an awaitable (`def __call__(self, prompt): return
+    some_coroutine`) was considered for detection. Confirmed there is
+    no signature-level way to distinguish this from an ordinary sync
+    callable without actually invoking it — which `acheck()`
+    deliberately does not do speculatively, since that would call a
+    real function just to inspect its dispatch type. Documented as
+    intentionally unsupported (Tutorial §3, §10) rather than fixed.
+- **New regression test file** (`test_v046_regressions.py`) covering,
+  as explicit pass/fail assertions rather than just static inspection:
+  plain async function, `async def __call__` object, and
+  `functools.partial(async_fn)` all working with `acheck()`; plain sync
+  function, sync `__call__` object, and `functools.partial(sync_fn)`
+  all correctly rejected; `check()`'s sync path unaffected by any of
+  the `acheck()` changes; and an `async def` validator producing a
+  clean `UNCERTAIN`/`"validation"` result with zero `RuntimeWarning`
+  emitted, verified by promoting `RuntimeWarning` to a raised exception
+  for the duration of that specific assertion.
+
 ## [v0.4.5] — bugfix batch: check_with_evidence() boolish handling, whitespace-answer guard
 
 Two confirmed bugs in `check_with_evidence()`, fixed together as one
@@ -278,7 +340,8 @@ inspection, and every fix has a dedicated regression test.
   (not blind resampling) when confidence is below a configurable
   threshold. `VERIFIED` / `REPAIRED` / `UNCERTAIN` statuses.
 
-[Unreleased]: https://github.com/Vedantgitbot/booth/compare/v0.4.5...HEAD
+[Unreleased]: https://github.com/Vedantgitbot/booth/compare/v0.4.6...HEAD
+[v0.4.6]: https://github.com/Vedantgitbot/booth/releases/tag/v0.4.6
 [v0.4.5]: https://github.com/Vedantgitbot/booth/releases/tag/v0.4.5
 [v0.4.4]: https://github.com/Vedantgitbot/booth/releases/tag/v0.4.4
 [v0.4.3]: https://github.com/Vedantgitbot/booth/releases/tag/v0.4.3
