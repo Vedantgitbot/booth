@@ -29,10 +29,10 @@ else:
 
 ```
    Your App                       BOOTH                          Your App
- ┌──────────┐    prompt    ┌──────────────────────┐  BoothResult ┌───────────┐
+ ┌──────────┐    prompt    ┌──────────────────────┐              ┌───────────┐
  │          │ ───────────▶ │         LLM          │              │           │
  │  ask()   │              │          │           │              │  branch   │
- │          │              │          ▼           │              │  on:      │
+ │          │              │          ▼           │  BoothResult │  on:      │
  │          │              │      Checkpoint      │ ───────────▶ │  .ok      │
  │          │              │   ambiguity detection│              │  .status  │
  │          │              │   confidence + retry │              │  .method  │
