@@ -26,7 +26,7 @@ Check the installed version:
 import booth
 
 print(booth.__version__)
-# 0.4.6
+# 0.4.7
 ```
 
 ---
@@ -157,7 +157,9 @@ result = booth.check(
 )
 ```
 
-This is useful for logging, debugging, and evaluating model behavior.
+This is useful for logging, debugging, and evaluating model behavior. On `check()`, `on_attempt` must always be synchronous — an async one raises `TypeError` immediately, the same as an async `validator` is rejected. On `acheck()`, `on_attempt` may be synchronous or asynchronous; see the note below for exactly which async shapes are recognized.
+
+**Robustness note (0.4.7):** `on_attempt` async detection used to rely on a bare `inspect.iscoroutinefunction(on_attempt)` check — the same check that missed an object whose `__call__` is itself `async def` for `call_fn`, before that was fixed for `call_fn` in `v0.4.6`. The `on_attempt` path had the identical gap, just never patched at the same time. A callback wrapped in a class (`class Logger: async def __call__(self, index, attempt): ...` — a natural pattern for a batching or rate-limited logger) was silently misdetected: on `acheck()` it was called without being awaited, so the coroutine was created and immediately discarded instead of actually running; on `check()` it slipped past the synchronous-only guard instead of raising `TypeError` as documented. Both entry points now reuse the same `_is_async_callable()` helper `call_fn` already uses, so `on_attempt` recognizes a plain `async def` function, a `functools.partial` wrapping one, and an object with `async def __call__` — identically to `call_fn`.
 
 ### `validator` (keyword-only)
 
@@ -507,6 +509,24 @@ if result.status == booth.UNCERTAIN:
 
 The raw, uncoerced JSON object the model returned, from whichever attempt determined the result. See section 7 above for the full contract. `None` if every attempt failed to parse, or for any `check_with_evidence()` result.
 
+### `to_dict()`
+
+New in 0.4.7. Returns a plain `dict` representation of the entire result — every field listed above, plus the computed properties (`ok`, `method`) that plain `dataclasses.asdict()` would silently drop, since they're properties rather than dataclass fields. Each entry in `attempts` is itself converted via `dataclasses.asdict()`, so the whole thing round-trips cleanly through `json.dumps()`:
+
+```python
+import json
+
+result = booth.check(call_llm, "What's the refund window?")
+
+payload = result.to_dict()
+payload["ok"]       # True/False — not silently missing, unlike dataclasses.asdict(result)
+payload["method"]   # "confidence", "validation", etc.
+
+json.dumps(payload)  # works — every value is a JSON-serializable type
+```
+
+This is the recommended way to log a `BoothResult`, put it on a queue, or send it to a monitoring/eval pipeline — reach for `to_dict()` instead of `dataclasses.asdict(result)` any time you need the full picture, including whether the result actually passed.
+
 ---
 
 ## 9. Handling Results
@@ -605,6 +625,24 @@ result = await booth.acheck(MyAsyncClient(), "What is the capital of France?")
 
 **What's intentionally not supported:** a callable object with a *synchronous* `__call__` that happens to return an awaitable internally (`def __call__(self, prompt): return some_coroutine`). There's no way to detect that from the callable's signature alone without actually calling it first, which `acheck()` deliberately doesn't do speculatively. Use an `async def __call__` or a plain `async def` function instead — `acheck()` will raise `TypeError` immediately for a sync callable of any kind, rather than accepting it and misbehaving later.
 
+### What counts as an async `on_attempt` (0.4.7)
+
+`on_attempt` is checked with the exact same detection `call_fn` uses above — a plain `async def` function, `functools.partial` wrapping one, and an object with `async def __call__` are all recognized and correctly awaited by `acheck()`:
+
+```python
+class AsyncLogger:
+    async def __call__(self, index, attempt):
+        await self._flush_to_queue(index, attempt)
+
+result = await booth.acheck(
+    call_llm,
+    "What is the capital of France?",
+    on_attempt=AsyncLogger(),   # correctly awaited as of 0.4.7
+)
+```
+
+Before 0.4.7, this specific shape — an async-`__call__` object passed as `on_attempt` — was silently mishandled: called without being awaited on `acheck()`, and not rejected with `TypeError` on `check()` as documented. A plain `async def` function or a `functools.partial` of one as `on_attempt` was already handled correctly before this fix; only the `__call__`-object case was affected. `on_attempt` on `check()` must still always be synchronous — passing any of the async shapes above to `check()` now correctly raises `TypeError` immediately, rather than slipping through.
+
 ---
 
 ## 11. Evidence Checking
@@ -652,6 +690,31 @@ result = booth.check_with_evidence(
 A score of `0.87` produces `VERIFIED`; a score below `0.8` produces `BLOCKED`. Boolean results are always treated as strict pass/fail values — `evidence_threshold` is not applied to them. This applies equally to a `numpy.bool_` returned from `compare_fn` (0.4.5+): if your comparison logic is written with numpy or pandas, a `numpy.bool_(False)` is treated as a strict fail rather than being coerced into a `0.0` score and re-checked against `evidence_threshold`. This recognition is cross-version-safe — numpy 2.0 renamed the underlying scalar type, and BOOTH accounts for both the old and new names.
 
 An `answer` that is empty or entirely whitespace is treated as missing: `check_with_evidence()` returns `UNCERTAIN` without calling `compare_fn` at all (0.4.5+; previously only a fully empty string like `""` was caught, not a whitespace-only string like `" "`).
+
+### A concrete example: a document that disagrees with the model
+
+The point of `check_with_evidence()` is easiest to see with a case where the model gets it wrong. Say your RAG pipeline retrieved the actual termination clause of a contract, and the model was asked to summarize the notice period:
+
+```python
+evidence = [
+    "Either party may terminate this Agreement upon ninety (90) "
+    "days written notice to the other party."
+]
+
+def compare_answer_to_evidence(answer: str, evidence: list) -> bool:
+    return "90" in answer  # a real implementation would do something smarter
+
+result = booth.check_with_evidence(
+    answer="You need to give 45 days' notice to cancel.",
+    evidence=evidence,
+    compare_fn=compare_answer_to_evidence,
+)
+
+result.status               # BLOCKED — the answer contradicts the evidence
+result.evidence_agreement   # False, straight from compare_fn
+```
+
+Without this check, `"45 days"` is just a string your application has no particular reason to doubt — it reads like a normal, confident answer. `check_with_evidence()` is what turns "the model said 45 days" into "the model said 45 days, and that disagrees with the 90-day clause we actually retrieved" — a materially different, and much more actionable, thing for your application to know before it reaches a user.
 
 ### Important
 
@@ -805,6 +868,8 @@ booth.BoothResult
 booth.CompareFn
 booth.ValidatorFn
 ```
+
+`BoothResult` also exposes `result.to_dict()` (0.4.7) for a fully JSON-serializable representation of a result, including its computed properties — see [section 8](#8-boothresult).
 
 Status constants:
 

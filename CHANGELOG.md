@@ -9,6 +9,50 @@ surface bump the patch version.
 
 Nothing yet.
 
+## [v0.4.7] — bugfix batch: on_attempt async-callable detection, BoothResult.to_dict()
+
+Two confirmed fixes, released together: one closes a detection gap in
+`on_attempt` handling that mirrors the `call_fn` bug fixed in `v0.4.6`
+but was never applied to the callback path, and the other adds a
+serialization convenience for `BoothResult`.
+
+- **`on_attempt` async-callable detection missed the same cases
+  `call_fn` did before `v0.4.6`.** Both `check()` and `acheck()` still
+  used a bare `inspect.iscoroutinefunction(on_attempt)` check to decide
+  whether the callback needed to be awaited (`acheck()`) or rejected
+  with `TypeError` (`check()`, which only ever accepted a synchronous
+  `on_attempt`) — the same check already known to miss an object whose
+  `__call__` is itself `async def`. A callback wrapped in a class
+  (e.g. `class Logger: async def __call__(self, index, attempt): ...`,
+  a natural pattern for a rate-limited or batching logger) was silently
+  misdetected: passed to `acheck()`, it was called without being
+  awaited, producing an unawaited coroutine and a silently-skipped
+  callback instead of running correctly; passed to `check()`, it
+  slipped past the synchronous-only guard instead of raising
+  `TypeError` immediately, as documented. Both entry points now reuse
+  the `_is_async_callable()` helper introduced in `v0.4.6` for
+  `call_fn`, so `on_attempt` and `call_fn` are checked identically and
+  can no longer drift apart from each other.
+- **Added `BoothResult.to_dict()`.** `dataclasses.asdict(result)` looks
+  like the obvious way to serialize a result for logging or a message
+  queue, but `BoothResult`'s most useful fields — `ok`, `method` — are
+  computed properties, not dataclass fields, so `asdict()` silently
+  drops them. `to_dict()` returns a plain `dict` containing every
+  documented `BoothResult` field *and* every computed property, and
+  converts each `Attempt` in `attempts` via `dataclasses.asdict()` as
+  well, so a full result — including its attempt history — is
+  JSON-serializable in one call.
+- **New regression test file** (`test_v047_regressions.py`) covering:
+  an `async def __call__` object and a `functools.partial`-wrapped
+  async function both working correctly as `on_attempt` for `acheck()`;
+  the same two shapes correctly raising `TypeError` when passed as
+  `on_attempt` to `check()`; a plain synchronous `on_attempt` still
+  working on both entry points, unaffected by the detection change; and
+  `to_dict()` round-tripping through `json.dumps()` for a result from
+  each of `check()`, `acheck()`, and `check_with_evidence()`, confirming
+  `ok`, `method`, and every nested `Attempt` are present and
+  JSON-serializable.
+
 ## [v0.4.6] — bugfix batch: callable compatibility hardening
 
 Two confirmed bugs in async-callable dispatch, fixed together as one
@@ -340,7 +384,8 @@ inspection, and every fix has a dedicated regression test.
   (not blind resampling) when confidence is below a configurable
   threshold. `VERIFIED` / `REPAIRED` / `UNCERTAIN` statuses.
 
-[Unreleased]: https://github.com/Vedantgitbot/booth/compare/v0.4.6...HEAD
+[Unreleased]: https://github.com/Vedantgitbot/booth/compare/v0.4.7...HEAD
+[v0.4.7]: https://github.com/Vedantgitbot/booth/releases/tag/v0.4.7
 [v0.4.6]: https://github.com/Vedantgitbot/booth/releases/tag/v0.4.6
 [v0.4.5]: https://github.com/Vedantgitbot/booth/releases/tag/v0.4.5
 [v0.4.4]: https://github.com/Vedantgitbot/booth/releases/tag/v0.4.4
