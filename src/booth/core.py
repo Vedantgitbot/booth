@@ -1,7 +1,7 @@
 import inspect
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any, Awaitable, Callable, List, Optional, Sequence, Tuple, Union
 
 CompareFn = Callable[[str, Sequence[str]], Union[bool, float]]
@@ -38,8 +38,7 @@ nothing else."""
 
 _JSON_RE = re.compile(r"\{[^{}]*\}")
 
-# Distinguishes "key absent" from "key present but invalid".
-_MISSING = object()
+_MISSING = object()  # distinguishes "key absent" from "key present but invalid"
 
 
 def _coerce_ambiguous(raw) -> Optional[bool]:
@@ -57,15 +56,10 @@ def _coerce_ambiguous(raw) -> Optional[bool]:
 
 
 def _is_async_callable(fn) -> bool:
-    """True for a plain async def function, for functools.partial
-    wrapping one (inspect.iscoroutinefunction already unwraps partial
-    internally, since Python 3.8), and for an object whose __call__ is
-    itself async def — the last case plain iscoroutinefunction(fn)
-    misses, since fn itself is a normal instance, not a coroutine
-    function. A synchronous __call__ that happens to return an
-    awaitable at runtime is intentionally NOT detected here — there is
-    no signature-level way to tell that apart from an ordinary sync
-    callable without actually calling it."""
+    """True for async def, functools.partial of one, or an object with
+    async def __call__. A sync __call__ that returns an awaitable at
+    runtime is intentionally not detected — no signature-level way to
+    tell without calling it."""
     return (
         inspect.iscoroutinefunction(fn)
         or inspect.iscoroutinefunction(getattr(fn, "__call__", None))
@@ -121,6 +115,24 @@ class BoothResult:
         if not self.attempts[-1].passed_validation:
             return "validation"
         return "confidence"
+
+    def to_dict(self) -> dict:
+        """Includes computed properties too — asdict(self) alone would
+        silently drop them (method, ok, etc. aren't dataclass fields)."""
+        return {
+            "answer": self.answer,
+            "status": self.status,
+            "confidence": self.confidence,
+            "attempts": [asdict(a) for a in self.attempts],
+            "ambiguous": self.ambiguous,
+            "interpretations": self.interpretations,
+            "evidence_agreement": self.evidence_agreement,
+            "parsed": self.parsed,
+            "n_attempts": self.n_attempts,
+            "ok": self.ok,
+            "all_parse_failed": self.all_parse_failed,
+            "method": self.method,
+        }
 
 
 def _build_prompt(user_prompt: str) -> str:
@@ -190,9 +202,7 @@ def _parse_response(raw_text: str) -> Attempt:
         confidence = obj.get("confidence")
         if answer is None or confidence is None:
             continue
-        # bool is a subclass of int, so float(True/False) succeeds
-        # silently — must reject before the float() conversion.
-        if isinstance(confidence, bool):
+        if isinstance(confidence, bool):  # bool is an int subclass; reject before float()
             continue
         try:
             confidence = float(confidence)
@@ -215,8 +225,7 @@ def _parse_response(raw_text: str) -> Attempt:
             interpretations = []
         interpretations = [str(i) for i in interpretations]
         chosen = obj.get("chosen_interpretation")
-        # `is not None` (not a truthy check) so 0/""/False survive.
-        chosen = str(chosen) if chosen is not None else None
+        chosen = str(chosen) if chosen is not None else None  # `is not None`, not truthy: keep 0/""/False
 
         return Attempt(
             raw_text=raw_text,
@@ -233,10 +242,9 @@ def _parse_response(raw_text: str) -> Attempt:
 
 
 def _is_boolish(value) -> bool:
-    """True for native bool and numpy's boolean scalar (checked by
-    type name, not by importing numpy — booth stays zero-dependency).
-    numpy >=2.0 renamed the scalar type's __name__ from "bool_" to
-    "bool", so both spellings are accepted for cross-version safety."""
+    """True for native bool and numpy's boolean scalar, checked by type
+    name (not importing numpy). Covers both numpy's pre-2.0 "bool_" and
+    >=2.0 "bool" names."""
     if isinstance(value, bool):
         return True
     t = type(value)
@@ -255,13 +263,8 @@ def _run_validator(
     except Exception as e:
         return False, f"Validator raised {type(e).__name__}: {e}"
 
-    # 0.4.6: validator must be synchronous. An async def validator
-    # called above produces a coroutine that would otherwise leak a
-    # "coroutine was never awaited" RuntimeWarning once discarded by
-    # the generic invalid-type branch below. Close it explicitly and
-    # give a specific, actionable message instead of the generic one.
     if inspect.iscoroutine(result):
-        result.close()
+        result.close()  # avoid leaking a "never awaited" RuntimeWarning
         return False, (
             "Validator returned a coroutine — validator must be "
             "synchronous. If your check needs to await something, "
@@ -361,7 +364,6 @@ def check_with_evidence(
 ) -> BoothResult:
     _validate_evidence_args(evidence_threshold)
 
-    # 0.4.5: a whitespace-only answer is treated as empty, same as "".
     if not answer or not answer.strip() or not evidence:
         return BoothResult(answer=answer or None, status=UNCERTAIN, confidence=None)
 
@@ -370,9 +372,6 @@ def check_with_evidence(
     except Exception:
         return BoothResult(answer=answer, status=UNCERTAIN, confidence=None)
 
-    # 0.4.5: use _is_boolish so numpy.bool_ is treated as a strict
-    # pass/fail, same as validator results, instead of falling through
-    # to the float() branch below.
     if _is_boolish(raw_result):
         passed = bool(raw_result)
         score = 1.0 if passed else 0.0
@@ -404,7 +403,7 @@ def check(
     validator: Optional[ValidatorFn] = None,
 ) -> BoothResult:
     _validate_args(threshold, max_retries)
-    if on_attempt is not None and inspect.iscoroutinefunction(on_attempt):
+    if on_attempt is not None and _is_async_callable(on_attempt):
         raise TypeError(
             "check() cannot await an async on_attempt callback. "
             "Use acheck() with an async on_attempt, or pass a sync "
@@ -457,10 +456,6 @@ async def acheck(
     *,
     validator: Optional[ValidatorFn] = None,
 ) -> BoothResult:
-    # 0.4.6: _is_async_callable also recognizes an object whose
-    # __call__ is itself async def, not just a plain async def
-    # function or a functools.partial wrapping one (the latter was
-    # already handled correctly by inspect.iscoroutinefunction itself).
     if not _is_async_callable(call_fn):
         raise TypeError(
             "acheck() requires an async call_fn (async def ... -> str, "
@@ -492,7 +487,7 @@ async def acheck(
             attempt.validation_error = err
 
         if on_attempt is not None:
-            if inspect.iscoroutinefunction(on_attempt):
+            if _is_async_callable(on_attempt):
                 await on_attempt(i, attempt)
             else:
                 on_attempt(i, attempt)
