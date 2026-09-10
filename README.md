@@ -1,16 +1,53 @@
 # BOOTH
 
-**A lightweight checkpoint library for LLM outputs.**
+A lightweight checkpoint library for LLM outputs.
 
-BOOTH sits between your application and an LLM call and gives you a structured decision: pass the output through, ask the model to reconsider, flag it as ambiguous, or check it against your own custom rule or your own retrieved evidence.
+**Should my application trust this LLM output?**
+
+Every app built on an LLM call eventually has to answer that question, usually the hard way, after a confidently wrong answer has already reached a user. BOOTH is the checkpoint that answers it first: it sits between your application and an LLM call and gives you a structured decision, pass the output through, ask the model to reconsider, flag it as ambiguous, or check it against your own custom rule or your own retrieved evidence.
 
 The name comes from a **ticket booth, toll booth, or parking/payment booth**: it doesn't need to know everything about what's happening beyond, it just checks whether the required condition has been met before letting something through.
+
+```bash
+pip install boothpy
+```
+
+---
+
+## See it in 10 seconds
+
+```python
+import booth
+
+result = booth.check(call_llm, "What is the capital of France?")
+
+if result.ok:
+    print(result.answer)                       # "Paris" — confident, unambiguous
+else:
+    print(f"BOOTH returned {result.status}")    # AMBIGUOUS / UNCERTAIN — don't ship it blind
+```
+
+```
+   Your App                       BOOTH                          Your App
+ ┌──────────┐    prompt    ┌──────────────────────┐  BoothResult ┌───────────┐
+ │          │ ───────────▶ │         LLM          │              │           │
+ │  ask()   │              │          │           │              │  branch   │
+ │          │              │          ▼           │              │  on:      │
+ │          │              │      Checkpoint      │ ───────────▶ │  .ok      │
+ │          │              │   ambiguity detection│              │  .status  │
+ │          │              │   confidence + retry │              │  .method  │
+ │          │              │   custom validator   │              │  .answer  │
+ │          │              │   evidence agreement │              │           │
+ └──────────┘              └──────────────────────┘              └───────────┘
+```
+
+That's the entire mental model: wrap the LLM call you already have, and get back a `BoothResult` with a real `.status` — instead of a raw string your code has no reason to trust.
 
 ---
 
 ## Current Status
 
-**v0.4.6**
+**v0.4.7**
 
 BOOTH currently provides:
 
@@ -21,6 +58,7 @@ BOOTH currently provides:
 * synchronous and asynchronous APIs (`check()` / `acheck()`), including callable-object support for both — a class instance with a sync `__call__` for `check()`, or an `async def __call__` for `acheck()`
 * `check_with_evidence()` for checking an answer against evidence your own RAG/retrieval pipeline already pulled
 * structured results, including `result.method` (which mechanism actually produced this outcome) and `result.parsed` (the model's raw, uncoerced JSON)
+* `result.to_dict()` for a fully JSON-serializable snapshot of a result — including computed properties like `ok` and `method`, not just the raw dataclass fields
 * full attempt history for every retry
 * five explicit statuses: `VERIFIED`, `REPAIRED`, `AMBIGUOUS`, `UNCERTAIN`, `BLOCKED`
 
@@ -216,21 +254,31 @@ async def main():
 asyncio.run(main())
 ```
 
-`call_fn` doesn't have to be a plain function — `check()` accepts any synchronous callable, including a class instance with a `__call__` method, and `acheck()` accepts a plain `async def` function, a `functools.partial` wrapping one, or an object whose `__call__` is itself `async def`. See the [Tutorial](TUTORIAL.md#10-async-usage) for the one case that's intentionally not supported.
+`call_fn` doesn't have to be a plain function — `check()` accepts any synchronous callable, including a class instance with a `__call__` method, and `acheck()` accepts a plain `async def` function, a `functools.partial` wrapping one, or an object whose `__call__` is itself `async def`. `on_attempt` follows the exact same detection rules as `call_fn` on both entry points (fixed in 0.4.7 — see the [Changelog](CHANGELOG.md#v047)). See the [Tutorial](TUTORIAL.md#10-async-usage) for the one case that's intentionally not supported.
 
 ---
 
 ### Evidence agreement checking
 
-For applications that already have evidence from their own RAG, search, or tool pipeline:
+For applications that already have evidence from their own RAG, search, or tool pipeline, `check_with_evidence()` checks the model's answer against the evidence you already retrieved — instead of just trusting that the model read it correctly:
 
 ```python
+evidence = [
+    "Either party may terminate this Agreement upon ninety (90) "
+    "days written notice to the other party."
+]
+
 result = booth.check_with_evidence(
-    answer="Paris is the capital of France.",
-    evidence=["France's capital city is Paris."],
+    answer="You need to give 45 days' notice to cancel.",
+    evidence=evidence,
     compare_fn=compare_answer_to_evidence,
 )
+
+result.status               # BLOCKED — the answer contradicts the evidence
+result.evidence_agreement   # the score/bool your compare_fn returned
 ```
+
+Without this check, `"45 days"` is just a string your app has no particular reason to doubt — it reads like a normal, confident answer, not a hallucination. `check_with_evidence()` is what turns "the model said 45 days" into "the model said 45 days, and that disagrees with the 90-day clause our own retrieval actually pulled" — a materially different, and far more actionable, thing to know before it ever reaches a user.
 
 You supply `compare_fn` — BOOTH doesn't choose a retrieval system or comparison algorithm for you. It can return `True`/`False` (strict pass/fail, `numpy.bool_` included) or a float `0.0`–`1.0` compared against `evidence_threshold`:
 
@@ -267,7 +315,7 @@ booth.check(
 * **`prompt`** — the original application or user prompt.
 * **`threshold`** — minimum confidence to accept an unambiguous, validator-passing answer. Default `0.7`.
 * **`max_retries`** — retries after the initial attempt. Default `1`.
-* **`on_attempt`** — optional callback invoked after each attempt.
+* **`on_attempt`** — optional callback invoked after each attempt. Must be synchronous on `check()`.
 * **`validator`** (keyword-only) — optional `ValidatorFn`. See [Custom validation](#custom-validation-with-validator) above. Must be synchronous. Default `None`.
 
 ### `booth.acheck()`
@@ -284,7 +332,7 @@ await booth.acheck(
 )
 ```
 
-Async equivalent of `check()`. `call_fn` may be a plain `async def` function, a `functools.partial` wrapping one, or an object with an `async def __call__` (0.4.6+). `validator` and `on_attempt` may still be synchronous or async respectively; `validator` itself is always required to be synchronous.
+Async equivalent of `check()`. `call_fn` may be a plain `async def` function, a `functools.partial` wrapping one, or an object with an `async def __call__` (0.4.6+). `on_attempt` accepts the same shapes and is correctly awaited (0.4.7+). `validator` itself is always required to be synchronous.
 
 ### `booth.check_with_evidence()`
 
@@ -321,6 +369,7 @@ result.interpretations        # list[str]
 result.all_parse_failed       # True if every attempt failed to parse
 result.method                 # which mechanism produced this result
 result.parsed                 # raw, uncoerced model JSON
+result.to_dict()              # full result as a plain, JSON-serializable dict (0.4.7)
 ```
 
 ## Result Statuses
