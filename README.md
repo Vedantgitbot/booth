@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/Booth_logo.png" alt="BOOTH logo" width="220">
+</p>
+
 # BOOTH
 
 A lightweight checkpoint library for LLM outputs.
