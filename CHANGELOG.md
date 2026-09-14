@@ -9,6 +9,94 @@ surface bump the patch version.
 
 Nothing yet.
 
+## [v0.4.8] — BREAKING: VERIFIED renamed to ACCEPTED; bugfix batch: async call_fn/non-str return/max_retries/non-str answer
+
+**BREAKING CHANGE:** `VERIFIED` is renamed to `ACCEPTED`. There is no
+backward-compatible alias, per explicit decision: fix the naming early,
+while BOOTH has few real dependents, rather than carry a misleading
+name forward. `from booth import VERIFIED` now raises `ImportError`;
+every caller must move to `booth.ACCEPTED`. The underlying status
+*string* also changed, from `"VERIFIED"` to `"ACCEPTED"` — not just the
+importable constant — so any code comparing against a hardcoded
+`"VERIFIED"` string literal (rather than the exported constant) will
+silently stop matching. This was always the wrong pattern to rely on;
+the constant was always the documented interface.
+
+Four confirmed bugs, fixed together as one release, all reproduced
+against the actual v0.4.7 tag before being fixed here:
+
+- **`check()` had no defense against an async `call_fn`.** `acheck()`
+  already rejected the opposite (sync `call_fn` passed to `acheck()`)
+  direction symmetrically, but `check()` had no equivalent guard: an
+  async `call_fn` passed to `check()` returned a coroutine object,
+  which `_parse_response()` then tried to `.strip()` as text, crashing
+  with `AttributeError` and leaking an unawaited-coroutine
+  `RuntimeWarning`. `check()` now raises `TypeError` immediately, with
+  a message pointing the caller to `acheck()`, mirroring how `acheck()`
+  already handles a mistakenly-sync `call_fn`.
+- **`call_fn` succeeding but returning something other than a string
+  crashed instead of failing gracefully.** A `call_fn` that returns
+  `None`, a `dict`, or any other non-string value (e.g. a misconfigured
+  or mocked client) previously crashed deep inside `_parse_response()`
+  with an unhelpful `AttributeError`, rather than being treated as a
+  failed attempt the way a `call_fn` exception already was. New
+  `_call_fn_to_attempt()` helper checks the return type before parsing
+  begins: a non-string return now produces a proper failed `Attempt`
+  (`parse_ok=False`, a descriptive `error` naming the offending type)
+  and participates normally in the retry loop, in both `check()` and
+  `acheck()`.
+- **`max_retries=1.5` (or any non-int) passed validation silently, then
+  crashed far from the real mistake.** `_validate_args()` only checked
+  `max_retries >= 0`, so a float slipped through and later crashed
+  inside `range(max_retries + 1)` with a generic `TypeError` that gave
+  no indication the problem was the `max_retries` argument itself.
+  `_validate_args()` now explicitly rejects any `max_retries` that
+  isn't an `int`, raising `TypeError` immediately at the call site.
+  `bool` is deliberately still accepted (it's an `int` subclass and a
+  harmless case here — `True`/`False` just mean 1 or 0 retries) —
+  unlike the dangerous bool-as-confidence case fixed in `v0.4.4`, this
+  one was left alone on purpose.
+- **A non-string `answer` field was silently `str()`-coerced into a
+  misleading, high-confidence `ACCEPTED` result.** `_parse_response()`
+  called `str(answer)` unconditionally, so a model returning a `dict`
+  or `list` for `answer` (a schema violation, not a genuine string) was
+  silently turned into a Python `repr` — not even valid JSON — and
+  reported as a normal, trustworthy answer at whatever confidence the
+  model claimed. This is the same class of bug as the `v0.4.4` boolean-
+  confidence fix: a schema violation quietly disguised as a real
+  result instead of being rejected. A non-string `answer` is now
+  rejected before parsing succeeds, with the same discipline already
+  applied to `confidence`; `interpretations`' existing non-list-to-`[]`
+  coercion is explicitly left untouched (informational field, doesn't
+  drive status, benign default).
+- **New regression test file** (`tests/test_v048_regressions.py`)
+  covering: `booth.ACCEPTED == "ACCEPTED"` importable from both the
+  package root and `booth.core`; `VERIFIED` no longer present anywhere
+  on the module and `from booth import VERIFIED` raising `ImportError`;
+  `check()`/`check_with_evidence()`/`to_dict()` all reporting
+  `"ACCEPTED"` post-rename; `REPAIRED` still distinct from `ACCEPTED`
+  and still `ok`; `check()` rejecting both a plain async function and
+  an `async def __call__` object with `TypeError` and zero leaked
+  coroutine warnings, while a plain sync `call_fn` is unaffected; a
+  `None` or `dict` return from both `check()` and `acheck()` producing
+  a proper `UNCERTAIN` with a descriptive error instead of crashing,
+  including recovery to `REPAIRED` when a bad first attempt is followed
+  by a good retry; `max_retries=1.5` raising `TypeError`,
+  `max_retries=False` still working normally, and `max_retries=-1`
+  still correctly raising `ValueError` (not superseded by the new
+  type check); and a `dict`- or `list`-valued `answer` being rejected
+  into `UNCERTAIN` with `result.answer is None`, alongside a
+  confirmation that a genuine string `answer` still works exactly as
+  before.
+- All existing test files (`test_acheck.py`, `test_bugfixes_0_4_4.py`,
+  `test_core.py`, `test_evidence.py`, `test_method.py`, `test_parsed.py`,
+  `test_v045_regressions.py`, `test_v046_regressions.py`,
+  `test_v047_regressions.py`, `test_validator.py`) were updated in
+  place to reference `bth.ACCEPTED`/`booth.ACCEPTED` instead of the
+  removed `VERIFIED`, including test names and print messages
+  (`test_verified_first_try` → `test_accepted_first_try`, etc.) — no
+  behavioral changes in those files beyond the rename itself.
+
 ## [v0.4.7] — bugfix batch: on_attempt async-callable detection, BoothResult.to_dict()
 
 Two confirmed fixes, released together: one closes a detection gap in
@@ -384,7 +472,8 @@ inspection, and every fix has a dedicated regression test.
   (not blind resampling) when confidence is below a configurable
   threshold. `VERIFIED` / `REPAIRED` / `UNCERTAIN` statuses.
 
-[Unreleased]: https://github.com/Vedantgitbot/booth/compare/v0.4.7...HEAD
+[Unreleased]: https://github.com/Vedantgitbot/booth/compare/v0.4.8...HEAD
+[v0.4.8]: https://github.com/Vedantgitbot/booth/releases/tag/v0.4.8
 [v0.4.7]: https://github.com/Vedantgitbot/booth/releases/tag/v0.4.7
 [v0.4.6]: https://github.com/Vedantgitbot/booth/releases/tag/v0.4.6
 [v0.4.5]: https://github.com/Vedantgitbot/booth/releases/tag/v0.4.5

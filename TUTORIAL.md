@@ -221,6 +221,8 @@ The default is:
 booth.DEFAULT_MAX_RETRIES
 ```
 
+`max_retries` must be a genuine `int`. A non-integer value such as `1.5` raises `TypeError` immediately, rather than failing deep inside the retry loop.
+
 Retries are used to give the model a chance to repair an unacceptable response.
 
 The retry prompt depends on what went wrong:
@@ -270,7 +272,7 @@ attempt
 
 For `check()`, `on_attempt` must be synchronous.
 
-Passing an asynchronous callback to `check()` raises `TypeError`.
+Passing an asynchronous callback to `check()` raises `TypeError`. This applies to a plain `async def` function and to an object whose `__call__` is itself `async def`.
 
 ---
 
@@ -495,7 +497,7 @@ result = booth.check(
 If the first attempt has sufficient confidence:
 
 ```python
-result.status == booth.VERIFIED
+result.status == booth.ACCEPTED
 ```
 
 If the first attempt fails the requirements but a retry produces an acceptable answer:
@@ -616,6 +618,8 @@ async def __call__(...)
 ```
 
 instead.
+
+Conversely, `check()` expects a synchronous `call_fn`. Passing an `async def` function, or an object whose `__call__` is `async def`, raises `TypeError` immediately rather than returning an unawaited coroutine.
 
 ---
 
@@ -771,7 +775,7 @@ True
 produces:
 
 ```python
-VERIFIED
+ACCEPTED
 ```
 
 while:
@@ -786,7 +790,7 @@ produces:
 BLOCKED
 ```
 
-Boolean results are treated as strict pass/fail results.
+Boolean results are treated as strict pass/fail results. This includes `numpy.bool_`, recognized the same way as a native `bool`.
 
 `evidence_threshold` is not applied to boolean results.
 
@@ -815,7 +819,7 @@ result = booth.check_with_evidence(
 produces:
 
 ```python
-result.status == booth.VERIFIED
+result.status == booth.ACCEPTED
 ```
 
 because:
@@ -914,7 +918,7 @@ It may be:
 None
 ```
 
-when no usable answer was obtained.
+when no usable answer was obtained. This includes the case where the model returned a non-string `answer` field (for example a JSON object or list instead of text) — BOOTH rejects that as a schema violation rather than silently stringifying it.
 
 ---
 
@@ -925,14 +929,14 @@ when no usable answer was obtained.
 Possible values are:
 
 ```python
-booth.VERIFIED
+booth.ACCEPTED
 booth.REPAIRED
 booth.AMBIGUOUS
 booth.UNCERTAIN
 booth.BLOCKED
 ```
 
-### `VERIFIED`
+### `ACCEPTED`
 
 The answer passed the relevant checks on the successful attempt.
 
@@ -969,7 +973,7 @@ It is equivalent to checking whether the status represents an accepted answer.
 
 ```python
 result.status in (
-    booth.VERIFIED,
+    booth.ACCEPTED,
     booth.REPAIRED,
 )
 ```
@@ -1112,6 +1116,8 @@ Whether BOOTH successfully parsed the attempt.
 if not attempt.parse_ok:
     print("The attempt failed to parse.")
 ```
+
+A call whose `call_fn` succeeded but returned something other than a string (for example `None`, or a `dict`) is also recorded here as a failed attempt rather than raising — check `attempt.error` for the reason.
 
 ---
 
@@ -1429,7 +1435,7 @@ BOOTH does not validate or sanitize these extra fields.
 For:
 
 ```text
-VERIFIED
+ACCEPTED
 REPAIRED
 AMBIGUOUS
 ```
@@ -1523,7 +1529,7 @@ json.dumps(payload)
 BOOTH exposes five status constants:
 
 ```python
-booth.VERIFIED
+booth.ACCEPTED
 booth.REPAIRED
 booth.AMBIGUOUS
 booth.UNCERTAIN
@@ -1535,9 +1541,11 @@ Use these constants instead of relying on hard-coded status strings.
 Example:
 
 ```python
-if result.status == booth.VERIFIED:
+if result.status == booth.ACCEPTED:
     print(result.answer)
 ```
+
+**Note (v0.4.8):** this status was previously named `VERIFIED`. It has been renamed to `ACCEPTED`, with no backward-compatible alias. `from booth import VERIFIED` now raises `ImportError`, and the status *string* itself changed too (`"VERIFIED"` → `"ACCEPTED"`), so any code comparing against a hardcoded string literal instead of the exported constant needs updating as well.
 
 ---
 
@@ -1767,7 +1775,7 @@ from booth import (
     check_with_evidence,
     CompareFn,
     ValidatorFn,
-    VERIFIED,
+    ACCEPTED,
     REPAIRED,
     AMBIGUOUS,
     BLOCKED,
@@ -1797,7 +1805,7 @@ booth.ValidatorFn
 The status constants are:
 
 ```python
-booth.VERIFIED
+booth.ACCEPTED
 booth.REPAIRED
 booth.AMBIGUOUS
 booth.UNCERTAIN
@@ -1826,7 +1834,7 @@ booth.DEFAULT_MAX_RETRIES
 ## Main types
 
 | Type          | Purpose                                |
-| ------------- | -------------------------------------- |
+| ------------- | --------------------------------------- |
 | `Attempt`     | Represents one LLM attempt             |
 | `BoothResult` | Represents the final result            |
 | `CompareFn`   | Type for evidence comparison functions |
@@ -1835,8 +1843,8 @@ booth.DEFAULT_MAX_RETRIES
 ## Result statuses
 
 | Status      | Meaning                                        |
-| ----------- | ---------------------------------------------- |
-| `VERIFIED`  | Accepted on the current attempt                |
+| ----------- | ----------------------------------------------- |
+| `ACCEPTED`  | Accepted on the current attempt                |
 | `REPAIRED`  | Accepted after a retry                         |
 | `AMBIGUOUS` | Question has multiple detected interpretations |
 | `UNCERTAIN` | No acceptable result was produced              |

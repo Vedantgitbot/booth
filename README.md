@@ -87,7 +87,7 @@ if result.status == booth.BLOCKED:
 
 ## What BOOTH provides today
 
-**v0.4.7**, zero-dependency, provider-agnostic, works with any LLM client you already have:
+**v0.4.8**, zero-dependency, provider-agnostic, works with any LLM client you already have:
 
 * ambiguity detection, confidence checking with genuine reconsideration retries, and an optional caller-supplied `validator`
 * `check_with_evidence()` for grounding an answer against evidence your own RAG pipeline already retrieved
