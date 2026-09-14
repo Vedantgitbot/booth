@@ -360,7 +360,7 @@ result = booth.check(
     max_retries=1,
 )
 
-if result.status in (booth.VERIFIED, booth.REPAIRED):
+if result.status in (booth.ACCEPTED, booth.REPAIRED):
     return result.answer
 
 if result.status == booth.AMBIGUOUS:
@@ -374,7 +374,7 @@ This gives the application explicit states instead of treating every model respo
 A useful policy might be:
 
 ```text
-VERIFIED
+ACCEPTED
     → continue automatically
 
 REPAIRED
