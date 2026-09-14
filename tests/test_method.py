@@ -14,13 +14,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 import booth as bth
 
 
-def test_method_confidence_on_verified():
+def test_method_confidence_on_accepted():
     def call_fn(p):
         return json.dumps({"answer": "Paris", "confidence": 0.9})
     r = bth.check(call_fn, "q")
-    assert r.status == bth.VERIFIED
+    assert r.status == bth.ACCEPTED
     assert r.method == "confidence"
-    print("PASS: method='confidence' on VERIFIED")
+    print("PASS: method='confidence' on ACCEPTED")
 
 
 def test_method_confidence_on_repaired():
@@ -143,12 +143,12 @@ def test_method_confidence_on_mixed_exception_then_low_confidence():
     print("PASS: mixed exception-then-low-confidence -> method='confidence'")
 
 
-def test_method_evidence_on_verified():
+def test_method_evidence_on_accepted():
     r = bth.check_with_evidence("Paris", ["Paris is the capital"], lambda a, e: True)
-    assert r.status == bth.VERIFIED
+    assert r.status == bth.ACCEPTED
     assert r.attempts == []
     assert r.method == "evidence"
-    print("PASS: method='evidence' on check_with_evidence VERIFIED")
+    print("PASS: method='evidence' on check_with_evidence ACCEPTED")
 
 
 def test_method_evidence_on_blocked():
@@ -198,7 +198,7 @@ def test_method_async_parity_confidence():
         return json.dumps({"answer": "Paris", "confidence": 0.9})
     r = asyncio.run(bth.acheck(call_fn, "q"))
     assert r.method == "confidence"
-    print("PASS: acheck() VERIFIED -> method='confidence'")
+    print("PASS: acheck() ACCEPTED -> method='confidence'")
 
 
 def test_method_async_parity_ambiguity():
@@ -221,7 +221,7 @@ def test_method_async_parity_parse_failure():
 
 
 if __name__ == "__main__":
-    test_method_confidence_on_verified()
+    test_method_confidence_on_accepted()
     test_method_confidence_on_repaired()
     test_method_ambiguity()
     test_method_ambiguity_detected_only_on_retry()
@@ -230,7 +230,7 @@ if __name__ == "__main__":
     test_method_confidence_on_uncertain_from_low_confidence()
     test_method_confidence_on_mixed_parse_failure_then_low_confidence()
     test_method_confidence_on_mixed_exception_then_low_confidence()
-    test_method_evidence_on_verified()
+    test_method_evidence_on_accepted()
     test_method_evidence_on_blocked()
     test_method_evidence_on_uncertain_empty_evidence()
     test_method_evidence_on_uncertain_compare_fn_exception()

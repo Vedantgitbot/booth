@@ -11,7 +11,7 @@ Both bugs live in check_with_evidence():
 
 import pytest
 
-from booth.core import check_with_evidence, VERIFIED, BLOCKED, UNCERTAIN
+from booth.core import check_with_evidence, ACCEPTED, BLOCKED, UNCERTAIN
 
 np = pytest.importorskip("numpy")
 
@@ -49,7 +49,7 @@ def test_numpy_bool_true_matches_native_true():
         compare_fn=compare_fn_native,
     )
 
-    assert result_numpy.status == result_native.status == VERIFIED
+    assert result_numpy.status == result_native.status == "ACCEPTED"
     assert result_numpy.evidence_agreement == result_native.evidence_agreement == 1.0
 
 
@@ -91,7 +91,7 @@ def test_evidence_threshold_not_applied_to_numpy_bool():
         evidence_threshold=0.99,
     )
 
-    assert result.status == VERIFIED
+    assert result.status == ACCEPTED
 
 
 def test_whitespace_only_answer_is_uncertain_and_compare_fn_not_called():
@@ -134,4 +134,4 @@ def test_non_whitespace_answer_unaffected():
         compare_fn=compare_fn,
     )
 
-    assert result.status == VERIFIED
+    assert result.status == ACCEPTED

@@ -32,18 +32,18 @@ def run(coro):
     return asyncio.run(coro)
 
 
-def test_acheck_verified_first_try():
+def test_acheck_accepted_first_try():
     call_fn = make_async_mock([("Paris", 0.95)])
 
     async def go():
         return await bth.acheck(call_fn, "Capital of France?", threshold=0.7, max_retries=1)
 
     r = run(go())
-    assert r.status == bth.VERIFIED, r.status
+    assert r.status == bth.ACCEPTED, r.status
     assert r.answer == "Paris"
     assert r.n_attempts == 1
     assert r.ok is True
-    print("PASS: acheck verified on first try")
+    print("PASS: acheck accepted on first try")
 
 
 def test_acheck_repaired_on_retry():
@@ -179,7 +179,7 @@ def test_acheck_ambiguous_short_circuits():
     assert r.status == bth.AMBIGUOUS, r.status
     assert r.ok is False
     assert r.n_attempts == 1, "ambiguity should short-circuit, not retry"
-    print("PASS: acheck ambiguous question -> AMBIGUOUS, not VERIFIED, no retry")
+    print("PASS: acheck ambiguous question -> AMBIGUOUS, not ACCEPTED, no retry")
 
 
 def test_acheck_on_attempt_sync_callback():
@@ -323,7 +323,7 @@ def test_acheck_parse_failure_then_recovery_still_repairs():
 
 
 if __name__ == "__main__":
-    test_acheck_verified_first_try()
+    test_acheck_accepted_first_try()
     test_acheck_repaired_on_retry()
     test_acheck_retry_prompt_shows_previous_answer()
     test_acheck_uncertain_after_exhausting_retries()

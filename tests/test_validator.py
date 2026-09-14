@@ -29,7 +29,7 @@ def test_validator_none_is_pure_noop_full_regression():
     passed as None (not omitted) to prove the parameter itself is
     inert."""
     r1 = bth.check(make_mock([("Paris", 0.95)]), "q", validator=None)
-    assert r1.status == bth.VERIFIED and r1.method == "confidence"
+    assert r1.status == bth.ACCEPTED and r1.method == "confidence"
 
     r2 = bth.check(make_mock([("Lyon", 0.3), ("Paris", 0.9)]), "q", max_retries=1, validator=None)
     assert r2.status == bth.REPAIRED and r2.method == "confidence"
@@ -39,16 +39,16 @@ def test_validator_none_is_pure_noop_full_regression():
                             "chosen_interpretation": "a", "answer": "x", "confidence": 0.9})
     r3 = bth.check(amb, "q", validator=None)
     assert r3.status == bth.AMBIGUOUS and r3.method == "ambiguity"
-    print("PASS: validator=None reproduces pre-0.4.2 behavior exactly (VERIFIED/REPAIRED/AMBIGUOUS)")
+    print("PASS: validator=None reproduces pre-0.4.2 behavior exactly (ACCEPTED/REPAIRED/AMBIGUOUS)")
 
 
 def test_validator_bool_true_passes_first_try():
     call_fn = make_mock([("Paris", 0.9)])
     r = bth.check(call_fn, "q", validator=lambda a: True)
-    assert r.status == bth.VERIFIED
+    assert r.status == bth.ACCEPTED
     assert r.attempts[0].passed_validation is True
     assert r.attempts[0].validation_error is None
-    print("PASS: validator returning True -> passes, VERIFIED")
+    print("PASS: validator returning True -> passes, ACCEPTED")
 
 
 def test_validator_bool_false_triggers_retry_generic_message():
@@ -199,7 +199,7 @@ def test_evidence_results_unaffected_by_validator_addition():
     """Regression: check_with_evidence() has no validator concept at
     all and must be completely untouched by this release."""
     r = bth.check_with_evidence("Paris", ["Paris is the capital"], lambda a, e: True)
-    assert r.status == bth.VERIFIED
+    assert r.status == bth.ACCEPTED
     assert r.method == "evidence"
     print("PASS: check_with_evidence() unaffected by validator addition")
 
@@ -208,8 +208,8 @@ def test_async_validator_parity_pass():
     async def call_fn(p):
         return json.dumps({"answer": "x", "confidence": 0.9})
     r = asyncio.run(bth.acheck(call_fn, "q", validator=lambda a: True))
-    assert r.status == bth.VERIFIED
-    print("PASS: acheck() validator pass -> VERIFIED")
+    assert r.status == bth.ACCEPTED
+    print("PASS: acheck() validator pass -> ACCEPTED")
 
 
 def test_async_validator_parity_fail_then_repaired():

@@ -36,20 +36,20 @@ def non_numeric_compare(answer: str, evidence):
     return "very confident"  # violates the documented bool|float contract
 
 
-def test_verified_float_above_threshold():
+def test_accepted_float_above_threshold():
     r = bth.check_with_evidence(
         answer="Paris is the capital of France",
         evidence=["The capital of France is Paris"],
         compare_fn=keyword_overlap_compare,
         evidence_threshold=0.5,
     )
-    assert r.status == bth.VERIFIED, r.status
+    assert r.status == bth.ACCEPTED, r.status
     assert r.ok is True
     assert r.confidence >= 0.5
     assert r.evidence_agreement == r.confidence
     assert r.ambiguous is False
     assert r.attempts == []
-    print("PASS: float score above threshold -> VERIFIED")
+    print("PASS: float score above threshold -> ACCEPTED")
 
 
 def test_blocked_float_below_threshold():
@@ -66,17 +66,17 @@ def test_blocked_float_below_threshold():
     print("PASS: float score below threshold -> BLOCKED")
 
 
-def test_verified_bool_true():
+def test_accepted_bool_true():
     r = bth.check_with_evidence(
         answer="paris",
         evidence=["France's capital city is Paris."],
         compare_fn=strict_bool_compare,
     )
-    assert r.status == bth.VERIFIED, r.status
+    assert r.status == bth.ACCEPTED, r.status
     assert r.ok is True
     assert r.confidence == 1.0
     assert r.evidence_agreement == 1.0
-    print("PASS: compare_fn returning True -> VERIFIED, confidence=1.0")
+    print("PASS: compare_fn returning True -> ACCEPTED, confidence=1.0")
 
 
 def test_bool_false_bypasses_threshold_even_at_zero():
@@ -204,15 +204,15 @@ def test_threshold_and_evidence_threshold_are_independent():
         evidence_threshold=0.1,
     )
     assert r_strict.status == bth.BLOCKED
-    assert r_lenient.status == bth.VERIFIED
+    assert r_lenient.status == bth.ACCEPTED
     assert r_strict.confidence == r_lenient.confidence, "same compare_fn score, different thresholds"
     print("PASS: evidence_threshold independently controls pass/fail for the same score")
 
 
 if __name__ == "__main__":
-    test_verified_float_above_threshold()
+    test_accepted_float_above_threshold()
     test_blocked_float_below_threshold()
-    test_verified_bool_true()
+    test_accepted_bool_true()
     test_bool_false_bypasses_threshold_even_at_zero()
     test_empty_answer_is_uncertain()
     test_empty_evidence_is_uncertain()

@@ -38,7 +38,7 @@ def test_bug1_string_false_for_ambiguous_is_not_flipped_to_true():
             "confidence": 0.9,
         })
     r = bth.check(call_fn, "q", max_retries=0)
-    assert r.status == bth.VERIFIED, r.status
+    assert r.status == bth.ACCEPTED, r.status
     assert r.ambiguous is False
     print("PASS: ambiguous='false' (string) correctly treated as False, not flipped to True")
 
@@ -79,7 +79,7 @@ def test_bug1_real_json_bool_unaffected():
     def call_fn(p):
         return json.dumps({"ambiguous": False, "answer": "Paris", "confidence": 0.95})
     r = bth.check(call_fn, "q")
-    assert r.status == bth.VERIFIED
+    assert r.status == bth.ACCEPTED
     assert r.ambiguous is False
     print("PASS: real JSON boolean for ambiguous still works exactly as before")
 
@@ -90,13 +90,13 @@ def test_bug2_boolean_confidence_true_is_rejected_not_accepted_as_1_0():
     """The highest-severity bug in the batch: float(True) == 1.0
     silently, with no exception. A model outputting "confidence": true
     (a JSON boolean, not a number) must be rejected, not silently
-    accepted as a perfect 1.0 confidence producing a false VERIFIED."""
+    accepted as a perfect 1.0 confidence producing a false ACCEPTED."""
     def call_fn(p):
         return json.dumps({"answer": "Paris", "confidence": True})
     r = bth.check(call_fn, "q", max_retries=0)
     assert r.status == bth.UNCERTAIN, r.status
     assert r.all_parse_failed is True
-    print("PASS: confidence=True (bool) rejected, NOT silently accepted as 1.0 -> false VERIFIED")
+    print("PASS: confidence=True (bool) rejected, NOT silently accepted as 1.0 -> false ACCEPTED")
 
 
 def test_bug2_boolean_confidence_false_is_rejected_not_accepted_as_0_0():
@@ -113,7 +113,7 @@ def test_bug2_real_numeric_string_confidence_still_works():
     def call_fn(p):
         return json.dumps({"answer": "Paris", "confidence": "0.95"})
     r = bth.check(call_fn, "q")
-    assert r.status == bth.VERIFIED, r.status
+    assert r.status == bth.ACCEPTED, r.status
     assert r.confidence == 0.95
     print("PASS: genuine numeric-string confidence ('0.95') still converts correctly")
 
@@ -184,7 +184,7 @@ def test_bug5_numpy_bool_true_accepted():
     def call_fn(p):
         return json.dumps({"answer": "x", "confidence": 0.9})
     r = bth.check(call_fn, "q", max_retries=0, validator=lambda a: fake_np_true)
-    assert r.status == bth.VERIFIED, r.status
+    assert r.status == bth.ACCEPTED, r.status
     assert r.attempts[0].passed_validation is True
     print("PASS: numpy.bool_-shaped True accepted, not rejected as 'invalid type'")
 
@@ -208,7 +208,7 @@ def test_bug6a_true_with_none_message_accepted():
     def call_fn(p):
         return json.dumps({"answer": "x", "confidence": 0.9})
     r = bth.check(call_fn, "q", max_retries=0, validator=lambda a: (True, None))
-    assert r.status == bth.VERIFIED, r.status
+    assert r.status == bth.ACCEPTED, r.status
     assert r.attempts[0].passed_validation is True
     assert r.attempts[0].validation_error is None
     print("PASS: (True, None) accepted, not rejected as invalid type")
@@ -267,12 +267,12 @@ def test_bug3_validatorfn_is_importable_from_public_package():
 
 def test_gap7_confidence_exactly_at_threshold_passes():
     """The condition is `confidence >= threshold`, so confidence
-    exactly equal to threshold must pass on the first attempt (VERIFIED),
+    exactly equal to threshold must pass on the first attempt (ACCEPTED),
     not be treated as below it."""
     def call_fn(p):
         return json.dumps({"answer": "x", "confidence": 0.7})
     r = bth.check(call_fn, "q", threshold=0.7, max_retries=0)
-    assert r.status == bth.VERIFIED, r.status
+    assert r.status == bth.ACCEPTED, r.status
     print("PASS: confidence exactly equal to threshold passes (>=, not >)")
 
 
@@ -280,7 +280,7 @@ def test_gap7_acheck_confidence_exactly_at_threshold_passes():
     async def call_fn(p):
         return json.dumps({"answer": "x", "confidence": 0.7})
     r = asyncio.run(bth.acheck(call_fn, "q", threshold=0.7, max_retries=0))
-    assert r.status == bth.VERIFIED, r.status
+    assert r.status == bth.ACCEPTED, r.status
     print("PASS: acheck() confidence exactly equal to threshold also passes")
 
 
@@ -295,7 +295,7 @@ def test_gap8_list_wrapped_json_object_still_recovers():
     def call_fn(p):
         return json.dumps([{"answer": "Paris", "confidence": 0.9}])
     r = bth.check(call_fn, "q", max_retries=0)
-    assert r.status == bth.VERIFIED, r.status
+    assert r.status == bth.ACCEPTED, r.status
     assert r.answer == "Paris"
     print("PASS: list-wrapped JSON object ([{...}]) still recovers via the regex fallback")
 

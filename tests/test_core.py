@@ -24,14 +24,14 @@ def make_mock(sequence):
     return call_fn
 
 
-def test_verified_first_try():
+def test_accepted_first_try():
     call_fn = make_mock([("Paris", 0.95)])
     r = bth.check(call_fn, "Capital of France?", threshold=0.7, max_retries=1)
-    assert r.status == bth.VERIFIED, r.status
+    assert r.status == bth.ACCEPTED, r.status
     assert r.answer == "Paris"
     assert r.n_attempts == 1
     assert r.ok is True
-    print("PASS: verified on first try")
+    print("PASS: accepted on first try")
 
 
 def test_repaired_on_retry():
@@ -166,7 +166,7 @@ def test_json_with_surrounding_commentary_still_parses():
         )
 
     r = bth.check(call_fn, "Capital of France?", threshold=0.7, max_retries=0)
-    assert r.status == bth.VERIFIED, r.status
+    assert r.status == bth.ACCEPTED, r.status
     assert r.answer == "Paris"
     print("PASS: JSON with surrounding commentary still parses via fallback")
 
@@ -218,7 +218,7 @@ def test_ambiguous_question_returns_ambiguous_status():
     assert r.answer == "Tbilisi"
     assert len(r.interpretations) == 2
     assert r.n_attempts == 1, "ambiguity should short-circuit, not retry"
-    print("PASS: ambiguous question (capital of Georgia) -> AMBIGUOUS, not VERIFIED")
+    print("PASS: ambiguous question (capital of Georgia) -> AMBIGUOUS, not ACCEPTED")
 
 
 def test_ambiguous_metric_question_returns_ambiguous_status():
@@ -238,12 +238,12 @@ def test_ambiguous_metric_question_returns_ambiguous_status():
     assert r.status == bth.AMBIGUOUS, r.status
     assert r.ok is False
     assert any("market cap" in i.lower() for i in r.interpretations)
-    print("PASS: ambiguous metric question (largest bank) -> AMBIGUOUS, not VERIFIED")
+    print("PASS: ambiguous metric question (largest bank) -> AMBIGUOUS, not ACCEPTED")
 
 
 def test_unambiguous_question_still_verifies_normally():
     """Sanity check: adding ambiguity detection must not break the
-    ordinary case. 'Capital of France' should still just VERIFY."""
+    ordinary case. 'Capital of France' should still just be ACCEPTED."""
     def call_fn(prompt):
         return json.dumps({
             "ambiguous": False,
@@ -254,11 +254,11 @@ def test_unambiguous_question_still_verifies_normally():
         })
 
     r = bth.check(call_fn, "What is the capital of France?", threshold=0.7, max_retries=1)
-    assert r.status == bth.VERIFIED, r.status
+    assert r.status == bth.ACCEPTED, r.status
     assert r.ok is True
     assert r.ambiguous is False
     assert r.interpretations == []
-    print("PASS: unambiguous question still verifies normally with the extended schema")
+    print("PASS: unambiguous question still resolves ACCEPTED normally with the extended schema")
 
 
 def test_ambiguous_field_missing_defaults_to_not_ambiguous():
@@ -270,7 +270,7 @@ def test_ambiguous_field_missing_defaults_to_not_ambiguous():
         return json.dumps({"answer": "Paris", "confidence": 0.95})
 
     r = bth.check(call_fn, "What is the capital of France?", threshold=0.7, max_retries=0)
-    assert r.status == bth.VERIFIED, r.status
+    assert r.status == bth.ACCEPTED, r.status
     assert r.ambiguous is False
     print("PASS: missing 'ambiguous' field defaults to False, no crash")
 
@@ -346,7 +346,7 @@ def test_all_parse_failed_false_when_no_attempts_made():
 
 
 if __name__ == "__main__":
-    test_verified_first_try()
+    test_accepted_first_try()
     test_repaired_on_retry()
     test_retry_prompt_shows_previous_answer()
     test_uncertain_after_exhausting_retries()

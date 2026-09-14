@@ -7,7 +7,7 @@ from typing import Any, Awaitable, Callable, List, Optional, Sequence, Tuple, Un
 CompareFn = Callable[[str, Sequence[str]], Union[bool, float]]
 ValidatorFn = Callable[[str], Union[bool, Tuple[bool, str]]]
 
-VERIFIED = "VERIFIED"
+ACCEPTED = "ACCEPTED"
 REPAIRED = "REPAIRED"
 AMBIGUOUS = "AMBIGUOUS"
 BLOCKED = "BLOCKED"
@@ -98,7 +98,7 @@ class BoothResult:
 
     @property
     def ok(self) -> bool:
-        return self.status in (VERIFIED, REPAIRED)
+        return self.status in (ACCEPTED, REPAIRED)
 
     @property
     def all_parse_failed(self) -> bool:
@@ -202,6 +202,12 @@ def _parse_response(raw_text: str) -> Attempt:
         confidence = obj.get("confidence")
         if answer is None or confidence is None:
             continue
+        # 0.4.8: answer must genuinely be a string, same discipline
+        # already applied to confidence. Silently str()-coercing a
+        # dict/list answer produced a Python repr (not even valid
+        # JSON) disguised as a real, trustworthy result.
+        if not isinstance(answer, str):
+            continue
         if isinstance(confidence, bool):  # bool is an int subclass; reject before float()
             continue
         try:
@@ -229,7 +235,7 @@ def _parse_response(raw_text: str) -> Attempt:
 
         return Attempt(
             raw_text=raw_text,
-            answer=str(answer),
+            answer=answer,
             confidence=confidence,
             parse_ok=True,
             ambiguous=ambiguous,
@@ -311,7 +317,7 @@ def _evaluate(
         return None
 
     if attempt.parse_ok and attempt.confidence >= threshold:
-        status = VERIFIED if attempt_index == 0 else REPAIRED
+        status = ACCEPTED if attempt_index == 0 else REPAIRED
         return BoothResult(
             answer=attempt.answer,
             status=status,
@@ -345,6 +351,11 @@ def _finalize_uncertain(attempts: List[Attempt]) -> BoothResult:
 def _validate_args(threshold: float, max_retries: int) -> None:
     if not 0.0 <= threshold <= 1.0:
         raise ValueError(f"threshold must be between 0.0 and 1.0, got {threshold}")
+    # 0.4.8: max_retries=1.5 previously passed this check silently and
+    # crashed deep inside range(max_retries + 1) with an unhelpful
+    # TypeError far from the actual mistake.
+    if not isinstance(max_retries, int):
+        raise TypeError(f"max_retries must be an int, got {type(max_retries).__name__}")
     if max_retries < 0:
         raise ValueError(f"max_retries must be >= 0, got {max_retries}")
 
@@ -384,12 +395,28 @@ def check_with_evidence(
             return BoothResult(answer=answer, status=UNCERTAIN, confidence=None)
         passed = score >= evidence_threshold
 
-    status = VERIFIED if passed else BLOCKED
+    status = ACCEPTED if passed else BLOCKED
     return BoothResult(
         answer=answer,
         status=status,
         confidence=score,
         evidence_agreement=score,
+    )
+
+
+def _call_fn_to_attempt(raw) -> Optional[Attempt]:
+    """0.4.8: call_fn succeeded but didn't return a string (None, a
+    dict, etc.). Treated the same as a call_fn exception: a failed
+    Attempt, not a crash deep inside the parser. Returns None if raw
+    IS a string, meaning normal parsing should proceed."""
+    if isinstance(raw, str):
+        return None
+    return Attempt(
+        raw_text=repr(raw),
+        answer=None,
+        confidence=None,
+        parse_ok=False,
+        error=f"call_fn returned {type(raw).__name__}, expected str",
     )
 
 
@@ -403,6 +430,18 @@ def check(
     validator: Optional[ValidatorFn] = None,
 ) -> BoothResult:
     _validate_args(threshold, max_retries)
+    # 0.4.8: check() previously had no defense against an async
+    # call_fn — it would return a coroutine, which _parse_response()
+    # then tried to .strip() as text, crashing with AttributeError
+    # and leaking an unawaited-coroutine RuntimeWarning. acheck()
+    # already rejected the opposite (sync) direction symmetrically;
+    # check() now does too.
+    if _is_async_callable(call_fn):
+        raise TypeError(
+            "check() requires a synchronous call_fn. Use acheck() for "
+            "an async call_fn (async def ... -> str, or an object "
+            "with an async def __call__)."
+        )
     if on_attempt is not None and _is_async_callable(on_attempt):
         raise TypeError(
             "check() cannot await an async on_attempt callback. "
@@ -425,7 +464,8 @@ def check(
                 error=str(e),
             )
         else:
-            attempt = _parse_response(raw)
+            bad_return = _call_fn_to_attempt(raw)
+            attempt = bad_return if bad_return is not None else _parse_response(raw)
 
         if attempt.parse_ok and not attempt.ambiguous:
             passed, err = _run_validator(validator, attempt.answer)
@@ -479,7 +519,8 @@ async def acheck(
                 error=str(e),
             )
         else:
-            attempt = _parse_response(raw)
+            bad_return = _call_fn_to_attempt(raw)
+            attempt = bad_return if bad_return is not None else _parse_response(raw)
 
         if attempt.parse_ok and not attempt.ambiguous:
             passed, err = _run_validator(validator, attempt.answer)

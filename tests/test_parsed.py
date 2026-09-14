@@ -28,7 +28,7 @@ def test_parsed_matches_raw_object_including_type_divergence_and_extra_fields():
             "extra_field": {"source": "policy.pdf"},  # not part of BOOTH's own schema at all
         })
     r = bth.check(call_fn, "q")
-    assert r.status == bth.VERIFIED, r.status
+    assert r.status == bth.ACCEPTED, r.status
 
     # BOOTH's own coerced fields
     assert r.answer == "30 days"
@@ -44,13 +44,13 @@ def test_parsed_matches_raw_object_including_type_divergence_and_extra_fields():
           "and an untouched extra field both confirmed")
 
 
-def test_parsed_present_on_verified():
+def test_parsed_present_on_accepted():
     def call_fn(p):
         return json.dumps({"answer": "Paris", "confidence": 0.9})
     r = bth.check(call_fn, "q")
-    assert r.status == bth.VERIFIED
+    assert r.status == bth.ACCEPTED
     assert r.parsed == {"answer": "Paris", "confidence": 0.9}
-    print("PASS: parsed present and correct on VERIFIED")
+    print("PASS: parsed present and correct on ACCEPTED")
 
 
 def test_parsed_present_on_repaired_is_the_winning_attempt():
@@ -146,7 +146,7 @@ def test_check_with_evidence_parsed_always_none():
     assert r1.parsed is None
     assert r2.parsed is None
     assert r3.parsed is None
-    print("PASS: check_with_evidence() results always have parsed=None (VERIFIED/BLOCKED/UNCERTAIN)")
+    print("PASS: check_with_evidence() results always have parsed=None (ACCEPTED/BLOCKED/UNCERTAIN)")
 
 
 def test_parsed_unaffected_by_validator():
@@ -155,7 +155,7 @@ def test_parsed_unaffected_by_validator():
     def call_fn(p):
         return json.dumps({"answer": "x", "confidence": 0.9, "tag": "with-validator"})
     r = bth.check(call_fn, "q", validator=lambda a: True)
-    assert r.status == bth.VERIFIED
+    assert r.status == bth.ACCEPTED
     assert r.parsed["tag"] == "with-validator"
     print("PASS: parsed works correctly alongside validator=")
 
@@ -164,7 +164,7 @@ def test_async_parity_parsed():
     async def call_fn(p):
         return json.dumps({"answer": "Paris", "confidence": "0.9", "tag": "async"})
     r = asyncio.run(bth.acheck(call_fn, "q"))
-    assert r.status == bth.VERIFIED
+    assert r.status == bth.ACCEPTED
     assert r.confidence == 0.9
     assert isinstance(r.confidence, float)
     assert r.parsed["confidence"] == "0.9"
@@ -175,7 +175,7 @@ def test_async_parity_parsed():
 
 if __name__ == "__main__":
     test_parsed_matches_raw_object_including_type_divergence_and_extra_fields()
-    test_parsed_present_on_verified()
+    test_parsed_present_on_accepted()
     test_parsed_present_on_repaired_is_the_winning_attempt()
     test_parsed_present_on_ambiguous()
     test_parsed_none_on_total_parse_failure()

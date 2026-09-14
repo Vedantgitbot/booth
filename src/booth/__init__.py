@@ -6,7 +6,7 @@ from booth.core import (
     check_with_evidence,
     CompareFn,
     ValidatorFn,
-    VERIFIED,
+    ACCEPTED,
     REPAIRED,
     AMBIGUOUS,
     BLOCKED,
@@ -15,7 +15,7 @@ from booth.core import (
     DEFAULT_MAX_RETRIES,
 )
 
-__version__ = "0.4.7"
+__version__ = "0.4.8"
 
 __all__ = [
     "Attempt",
@@ -25,7 +25,7 @@ __all__ = [
     "check_with_evidence",
     "CompareFn",
     "ValidatorFn",
-    "VERIFIED",
+    "ACCEPTED",
     "REPAIRED",
     "AMBIGUOUS",
     "BLOCKED",

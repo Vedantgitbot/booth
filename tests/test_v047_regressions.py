@@ -69,7 +69,7 @@ def test_check_sync_function_on_attempt_works():
         calls.append((i, attempt.answer))
 
     result = booth.check(_sync_call_fn, "q", on_attempt=on_attempt)
-    assert result.status == booth.VERIFIED
+    assert result.status == booth.ACCEPTED
     assert calls == [(0, "42")]
 
 
@@ -81,7 +81,7 @@ def test_check_sync_callable_object_on_attempt_works():
             calls.append((i, attempt.answer))
 
     result = booth.check(_sync_call_fn, "q", on_attempt=SyncLogger())
-    assert result.status == booth.VERIFIED
+    assert result.status == booth.ACCEPTED
     assert calls == [(0, "42")]
 
 
@@ -119,7 +119,7 @@ def test_acheck_sync_function_on_attempt_called():
         calls.append((i, attempt.answer))
 
     result = _run(booth.acheck(_async_call_fn, "q", on_attempt=on_attempt))
-    assert result.status == booth.VERIFIED
+    assert result.status == booth.ACCEPTED
     assert calls == [(0, "42")]
 
 
@@ -131,7 +131,7 @@ def test_acheck_sync_callable_object_on_attempt_called():
             calls.append((i, attempt.answer))
 
     result = _run(booth.acheck(_async_call_fn, "q", on_attempt=SyncLogger()))
-    assert result.status == booth.VERIFIED
+    assert result.status == booth.ACCEPTED
     assert calls == [(0, "42")]
 
 
@@ -145,7 +145,7 @@ def test_acheck_async_function_on_attempt_awaited():
         warnings.simplefilter("error")  # promote leaked-coroutine warning to a failure
         result = _run(booth.acheck(_async_call_fn, "q", on_attempt=on_attempt))
 
-    assert result.status == booth.VERIFIED
+    assert result.status == booth.ACCEPTED
     assert calls == [(0, "42")]
 
 
@@ -164,7 +164,7 @@ def test_acheck_async_callable_object_on_attempt_awaited():
         warnings.simplefilter("error")
         result = _run(booth.acheck(_async_call_fn, "q", on_attempt=AsyncLogger()))
 
-    assert result.status == booth.VERIFIED
+    assert result.status == booth.ACCEPTED
     assert calls == [(0, "42")], "on_attempt's coroutine body never ran — it was leaked, not awaited"
 
 
@@ -234,7 +234,7 @@ def test_to_dict_is_json_serializable():
     # Should not raise.
     serialized = json.dumps(d)
     reloaded = json.loads(serialized)
-    assert reloaded["status"] == booth.VERIFIED
+    assert reloaded["status"] == booth.ACCEPTED
     assert reloaded["method"] == "confidence"
 
 

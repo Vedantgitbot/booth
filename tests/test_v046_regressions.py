@@ -105,7 +105,7 @@ def test_acheck_plain_async_function_works():
         return _make_valid_raw()
 
     result = _run(booth.acheck(call_fn, "What is 6*7?"))
-    assert result.status == booth.VERIFIED
+    assert result.status == booth.ACCEPTED
     assert result.answer == "42"
 
 
@@ -115,7 +115,7 @@ def test_acheck_async_call_object_works():
             return _make_valid_raw()
 
     result = _run(booth.acheck(AsyncClient(), "What is 6*7?"))
-    assert result.status == booth.VERIFIED
+    assert result.status == booth.ACCEPTED
     assert result.answer == "42"
 
 
@@ -125,7 +125,7 @@ def test_acheck_partial_async_function_works():
 
     wrapped = functools.partial(call_fn, suffix="ignored")
     result = _run(booth.acheck(wrapped, "What is 6*7?"))
-    assert result.status == booth.VERIFIED
+    assert result.status == booth.ACCEPTED
 
 
 def test_acheck_sync_callable_object_rejected():
@@ -164,7 +164,7 @@ def test_check_sync_callable_object_still_works():
             return _make_valid_raw()
 
     result = booth.check(SyncClient(), "What is 6*7?")
-    assert result.status == booth.VERIFIED
+    assert result.status == booth.ACCEPTED
     assert result.answer == "42"
 
 
