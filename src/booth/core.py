@@ -181,8 +181,35 @@ def _try_json(candidate: str) -> Optional[dict]:
     return obj if isinstance(obj, dict) else None
 
 
+def _iter_raw_decoded_objects(text: str):
+    """0.4.9: fallback extractor for item 2. The flat _JSON_RE regex
+    only matches a JSON object with no nested braces at all, so an
+    object embedded in surrounding prose whose own string values
+    happen to contain brace-like text (e.g. "the config is {mode:
+    fast}") could never be recovered by regex, even though the object
+    is otherwise perfectly well-formed. json.JSONDecoder.raw_decode
+    parses a real, balanced JSON value starting at a given position —
+    it correctly treats braces inside a quoted string as ordinary
+    string content, not structure — so scanning for every '{' and
+    trying raw_decode from there recovers cases the regex categorically
+    cannot. This runs *in addition to* the regex pass above, not
+    instead of it: the regex stays first since it's cheap and covers
+    the common case; this is a more thorough, more expensive fallback.
+    """
+    decoder = json.JSONDecoder()
+    for idx, ch in enumerate(text):
+        if ch != "{":
+            continue
+        try:
+            obj, _ = decoder.raw_decode(text, idx)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict):
+            yield obj
+
+
 def _parse_response(raw_text: str) -> Attempt:
-    candidates = []
+    candidates: List[Union[str, dict]] = []
 
     stripped = raw_text.strip()
     if stripped.startswith("{") and stripped.endswith("}"):
@@ -193,28 +220,51 @@ def _parse_response(raw_text: str) -> Attempt:
         candidates.append(lines[-1])
 
     candidates.extend(_JSON_RE.findall(raw_text))
+    candidates.extend(_iter_raw_decoded_objects(raw_text))
+
+    # 0.4.9 item 5: track why each rejected candidate failed, so a
+    # total parse failure carries a real reason in Attempt.error
+    # instead of being silent about which of several possible schema
+    # violations actually happened.
+    last_reason: Optional[str] = None
 
     for candidate in candidates:
-        obj = _try_json(candidate)
+        obj = candidate if isinstance(candidate, dict) else _try_json(candidate)
         if obj is None:
+            if last_reason is None:
+                last_reason = "no candidate contained a valid JSON object"
             continue
+
         answer = obj.get("answer")
         confidence = obj.get("confidence")
         if answer is None or confidence is None:
+            last_reason = "JSON object is missing the required 'answer' or 'confidence' key"
             continue
-        # 0.4.8: answer must genuinely be a string, same discipline
-        # already applied to confidence. Silently str()-coercing a
-        # dict/list answer produced a Python repr (not even valid
-        # JSON) disguised as a real, trustworthy result.
+
+        # 0.4.9 item 4: numeric and boolean answers are legitimate
+        # scalar values a model might return (e.g. {"answer": 42}) and
+        # are coerced to their string form for the normalized .answer
+        # field — the raw value is still preserved untouched in
+        # .parsed, same split already used for confidence. Structured
+        # values (dict/list) are still rejected outright: coercing
+        # those via str() would produce a Python repr disguised as a
+        # trustworthy answer, the exact bug fixed in 0.4.8.
+        if isinstance(answer, (dict, list)):
+            last_reason = "'answer' was a dict/list, not a scalar value"
+            continue
         if not isinstance(answer, str):
-            continue
+            answer = str(answer)
+
         if isinstance(confidence, bool):  # bool is an int subclass; reject before float()
+            last_reason = "'confidence' was a boolean, not a number"
             continue
         try:
             confidence = float(confidence)
         except (TypeError, ValueError):
+            last_reason = f"'confidence' could not be converted to a float: {confidence!r}"
             continue
         if not 0.0 <= confidence <= 1.0:
+            last_reason = f"'confidence' {confidence} is out of the [0.0, 1.0] range"
             continue
 
         raw_ambiguous = obj.get("ambiguous", _MISSING)
@@ -223,8 +273,19 @@ def _parse_response(raw_text: str) -> Attempt:
         else:
             coerced = _coerce_ambiguous(raw_ambiguous)
             if coerced is None:
+                last_reason = f"'ambiguous' had an unrecognized value: {raw_ambiguous!r}"
                 continue
             ambiguous = coerced
+
+        # 0.4.9 item 1: an empty or whitespace-only answer is a
+        # degenerate response and must not silently pass just because
+        # confidence happened to be high. AMBIGUOUS attempts are
+        # exempt — the model may legitimately leave answer blank while
+        # flagging ambiguity and providing interpretations instead, so
+        # this guard must not discard that case.
+        if not ambiguous and not answer.strip():
+            last_reason = "'answer' was empty or whitespace-only"
+            continue
 
         interpretations = obj.get("interpretations") or []
         if not isinstance(interpretations, list):
@@ -244,7 +305,13 @@ def _parse_response(raw_text: str) -> Attempt:
             parsed=obj,
         )
 
-    return Attempt(raw_text=raw_text, answer=None, confidence=None, parse_ok=False)
+    return Attempt(
+        raw_text=raw_text,
+        answer=None,
+        confidence=None,
+        parse_ok=False,
+        error=last_reason or "no JSON object could be extracted from the response",
+    )
 
 
 def _is_boolish(value) -> bool:
@@ -361,10 +428,36 @@ def _validate_args(threshold: float, max_retries: int) -> None:
 
 
 def _validate_evidence_args(evidence_threshold: float) -> None:
+    # 0.4.9 item 6: a string or None previously produced Python's
+    # generic comparison TypeError deep inside `0.0 <= evidence_threshold`,
+    # the same footgun max_retries had before 0.4.8 fixed it there.
+    # bool is explicitly rejected too (unlike max_retries, where
+    # True=1/False=0 retries is a harmless, arguably intentional
+    # reading) — a bool threshold silently meaning "require a perfect
+    # 1.0 score" or "accept anything" is far more likely to be a
+    # caller mistake than a deliberate choice.
+    if isinstance(evidence_threshold, bool) or not isinstance(evidence_threshold, (int, float)):
+        raise TypeError(
+            f"evidence_threshold must be a real number, got {type(evidence_threshold).__name__}"
+        )
     if not 0.0 <= evidence_threshold <= 1.0:
         raise ValueError(
             f"evidence_threshold must be between 0.0 and 1.0, got {evidence_threshold}"
         )
+
+
+def _is_empty_evidence(evidence) -> bool:
+    """0.4.9 item 3: `not evidence` raises ValueError for a multi-element
+    numpy array ("the truth value of an array is ambiguous"), so a
+    caller passing evidence=np.array([...]) crashed instead of being
+    evaluated normally. len() works correctly for anything sized
+    (list, tuple, numpy array, str) without ever consulting __bool__;
+    anything without a length (a bare generator, say) falls back to
+    the previous truthiness check rather than raising."""
+    try:
+        return len(evidence) == 0
+    except TypeError:
+        return not evidence
 
 
 def check_with_evidence(
@@ -375,13 +468,37 @@ def check_with_evidence(
 ) -> BoothResult:
     _validate_evidence_args(evidence_threshold)
 
-    if not answer or not answer.strip() or not evidence:
+    # 0.4.9 item 3: a non-str, non-None answer (e.g. an int or a list)
+    # previously crashed with AttributeError on `answer.strip()` below
+    # instead of failing predictably. `answer=None` is left as-is —
+    # it already short-circuits safely via `not answer` and returning
+    # UNCERTAIN for a missing answer is reasonable, existing behavior.
+    if answer is not None and not isinstance(answer, str):
+        raise TypeError(f"answer must be a str, got {type(answer).__name__}")
+
+    if not answer or not answer.strip() or _is_empty_evidence(evidence):
         return BoothResult(answer=answer or None, status=UNCERTAIN, confidence=None)
 
     try:
         raw_result = compare_fn(answer, evidence)
     except Exception:
         return BoothResult(answer=answer, status=UNCERTAIN, confidence=None)
+
+    # 0.4.9 item 3: an async compare_fn (or a sync wrapper that itself
+    # returns a coroutine, e.g. `lambda a, e: some_async_fn(a, e)`)
+    # doesn't raise when called — it just hands back an un-awaited
+    # coroutine object. That previously either crashed confusingly
+    # inside float(raw_result) or silently fell through, and either
+    # way leaked a "coroutine was never awaited" RuntimeWarning.
+    # Detected and rejected explicitly instead, the same discipline
+    # _run_validator() already applies to an async validator.
+    if inspect.iscoroutine(raw_result):
+        raw_result.close()
+        raise TypeError(
+            "compare_fn must be synchronous and return bool or float "
+            "directly, not a coroutine. check_with_evidence() does "
+            "not support an async compare_fn."
+        )
 
     if _is_boolish(raw_result):
         passed = bool(raw_result)
