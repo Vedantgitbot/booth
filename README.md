@@ -12,7 +12,7 @@
 
 **Should my application trust this LLM output?**
 
-[Tutorial](TUTORIAL.md) · [Use Cases](USECASES.md) · [Changelog](CHANGELOG.md) · [Issues](https://github.com/Vedantgitbot/booth/issues)
+[Tutorial](TUTORIAL.md) · [Use Cases](USECASES.md) · [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md) · [Issues](https://github.com/Vedantgitbot/booth/issues)
 
 Every app built on an LLM call has to answer that question eventually, usually the hard way, after a confidently wrong answer has already reached a user. BOOTH is the checkpoint that answers it first. It sits between your application and an LLM call, and hands you back a structured, defensible decision instead of just whatever fluent text the model gave you.
 
@@ -87,7 +87,7 @@ if result.status == booth.BLOCKED:
 
 ## What BOOTH provides today
 
-**v0.4.8**, zero-dependency, provider-agnostic, works with any LLM client you already have:
+**v0.4.9**, zero-dependency, provider-agnostic, works with any LLM client you already have:
 
 * ambiguity detection, confidence checking with genuine reconsideration retries, and an optional caller-supplied `validator`
 * `check_with_evidence()` for grounding an answer against evidence your own RAG pipeline already retrieved
@@ -111,7 +111,9 @@ pip install boothpy
 
 ## Contributing
 
-BOOTH is small on purpose. That's a design constraint, not a lack of ambition. Bug reports and confirmed edge cases are the most valuable kind of contribution right now. [Open an issue](https://github.com/Vedantgitbot/booth/issues) with a minimal reproduction, and it'll get a real look. Every fix so far has started from a reproduced failure, not a guess, and that bar stays the same for outside contributions too.
+BOOTH is small on purpose. That's a design constraint, not a lack of ambition. Bug reports and confirmed edge cases are the most valuable kind of contribution right now.
+
+See **[CONTRIBUTING.md](CONTRIBUTING.md)** for how to report a bug well, what a good reproduction looks like, and what BOOTH's "small on purpose" stance means for feature PRs specifically.
 
 ---
 

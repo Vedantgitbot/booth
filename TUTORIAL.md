@@ -705,6 +705,13 @@ result.status == booth.UNCERTAIN
 
 and does not call `compare_fn`.
 
+`answer=None` is treated the same way — a missing answer, `UNCERTAIN`, no call to `compare_fn`. Any other non-`str` value (an `int`, a `list`, etc.) is a genuine caller mistake rather than a "missing" case, and as of `v0.4.9` raises `TypeError` immediately instead of crashing later with a confusing `AttributeError`:
+
+```python
+booth.check_with_evidence(answer=123, evidence=["e"], compare_fn=my_compare_fn)
+# TypeError: answer must be a str, got int
+```
+
 ---
 
 ## 7.2 `evidence`
@@ -732,6 +739,8 @@ The evidence sequence must not be empty:
 is rejected.
 
 The content of the evidence is otherwise the application's responsibility.
+
+`evidence` does not have to be a plain `list`. Anything with a length — a `tuple`, or a `numpy` array of strings, for example — works the same way. Prior to `v0.4.9`, a multi-element `numpy` array specifically crashed the emptiness check with `ValueError: the truth value of an array is ambiguous`, rather than being evaluated normally; that's fixed.
 
 ---
 
@@ -761,6 +770,8 @@ def compare_answer_to_evidence(answer, evidence):
 ```
 
 A real application would normally use a more appropriate comparison method.
+
+`compare_fn` must be synchronous. An `async def compare_fn`, or a synchronous function that internally calls an async comparator and returns the resulting coroutine without awaiting it, is rejected with `TypeError` as of `v0.4.9` — previously this either crashed confusingly or silently fell through to `UNCERTAIN`, and either way leaked a "coroutine was never awaited" warning. This mirrors the treatment `validator` already gets in `check()`/`acheck()`: if your comparison needs to await something, resolve it before calling `check_with_evidence()` and pass a plain sync function.
 
 ---
 
@@ -832,6 +843,13 @@ A score below the threshold produces:
 
 ```python
 BLOCKED
+```
+
+`evidence_threshold` must be a real number (`int` or `float`). As of `v0.4.9`, a `str`, `None`, or `bool` value raises `TypeError` immediately — the same treatment `max_retries` already got in `v0.4.8` — rather than failing later with a confusing generic comparison error. `bool` is rejected here specifically (unlike `max_retries`, where `True`/`False` are harmlessly treated as 1/0): a threshold silently becoming "require a perfect 1.0 score" or "accept anything" is far more likely to be a caller mistake than an intentional choice.
+
+```python
+booth.check_with_evidence(answer, evidence, compare_fn, evidence_threshold="0.8")
+# TypeError: evidence_threshold must be a real number, got str
 ```
 
 ---
@@ -918,7 +936,11 @@ It may be:
 None
 ```
 
-when no usable answer was obtained. This includes the case where the model returned a non-string `answer` field (for example a JSON object or list instead of text) — BOOTH rejects that as a schema violation rather than silently stringifying it.
+when no usable answer was obtained. This includes the case where the model returned a dict or list `answer` field instead of a scalar value — BOOTH rejects that as a schema violation rather than silently stringifying it into a misleading result.
+
+A numeric or boolean `answer` (for example `{"answer": 42}`) is not rejected the same way. Since `v0.4.9`, these are coerced to their string form (`"42"`) for `result.answer`, the same treatment `confidence` already gets in the other direction — only `dict`/`list` values are schema violations.
+
+An empty or whitespace-only `answer` (for example `{"answer": ""}` or `{"answer": "   "}`) is also rejected as of `v0.4.9`, regardless of how high the reported confidence is — a blank answer at high confidence was previously accepted as `ACCEPTED`. The one exception is an `AMBIGUOUS` attempt: the model may legitimately leave `answer` blank while relying on `interpretations` to carry the real content, so this guard does not apply when `ambiguous` is `true`.
 
 ---
 
@@ -1128,6 +1150,8 @@ Contains parsing or other attempt-level error information when applicable.
 ```python
 print(attempt.error)
 ```
+
+As of `v0.4.9`, a parse failure always carries a specific, human-readable reason here (for example `"'confidence' 17.0 is out of the [0.0, 1.0] range"` or `"'answer' was empty or whitespace-only"`) instead of leaving `error` as `None`. `call_fn` exceptions and non-string `call_fn` returns already populated this field in earlier versions; this extends the same discipline to every parse-rejection path inside `_parse_response()`.
 
 ---
 

@@ -9,6 +9,116 @@ surface bump the patch version.
 
 Nothing yet.
 
+## [v0.4.9] — bugfix batch: empty-answer guard, brace-parsing fallback, check_with_evidence() robustness, numeric/bool answers, error reasons, evidence_threshold validation
+
+Six fixes, shipped together in the order below. All were reproduced
+against the actual `v0.4.8` release before being fixed here, and all
+208 tests (177 carried over unmodified, 31 new) pass with zero
+regressions to any existing test.
+
+- **An empty or whitespace-only `answer` was silently accepted as
+  `ACCEPTED` at high confidence.** Nothing in `_parse_response()`
+  rejected `{"answer": "", "confidence": 0.99}` — a blank answer with
+  no content at all could pass every check purely because the
+  self-reported confidence was high. Now rejected the same way an
+  out-of-range confidence already is, with one deliberate exemption:
+  an `AMBIGUOUS` attempt is exempt from this guard, since the model
+  may legitimately leave `answer` blank while relying on
+  `interpretations` to carry the real content instead.
+- **Brace-like content inside `answer` could defeat the fallback JSON
+  extractor.** The flat `_JSON_RE` regex (`\{[^{}]*\}`) only matches an
+  object with no nested braces at all, so a *complete, valid* JSON
+  object embedded in surrounding commentary — where the object's own
+  `answer` string happens to contain brace-like text, e.g. `"the
+  config is {mode: fast, retries: 3}"` — could never be recovered by
+  regex alone, even though nothing about the object was actually
+  malformed. `json.JSONDecoder.raw_decode` is now tried as a further
+  fallback, scanning for every `{` in the text and attempting a real,
+  balanced parse from that position — it correctly treats braces
+  inside a JSON string value as ordinary content rather than
+  structure, which a flat regex fundamentally cannot do. This runs in
+  addition to the existing regex pass, not instead of it: the regex
+  stays first since it's cheap and covers the common case, and
+  `raw_decode` is the slower, more thorough fallback. Genuinely
+  malformed JSON (e.g. a response missing its closing brace entirely)
+  still correctly fails to parse — this fix recovers *valid* objects
+  that were previously unreachable, it does not start inferring
+  results out of broken input.
+- **`check_with_evidence()` crashed instead of failing predictably on
+  three different malformed inputs.** All three are now handled
+  explicitly:
+  - A non-`str`, non-`None` `answer` (an `int`, a `list`, etc.)
+    previously crashed with `AttributeError` on `answer.strip()`. Now
+    raises `TypeError` immediately, naming the offending type.
+    `answer=None` is unaffected — it already short-circuited safely
+    and still returns `UNCERTAIN`.
+  - `evidence` passed as a multi-element `numpy` array crashed the
+    emptiness check (`not evidence`) with `ValueError: the truth value
+    of an array is ambiguous`. A new `_is_empty_evidence()` helper uses
+    `len()` instead, which works correctly for anything sized —
+    `numpy` arrays included — without ever consulting `__bool__`.
+  - An `async def compare_fn`, or a synchronous wrapper that itself
+    returns a coroutine (e.g. `lambda a, e: some_async_fn(a, e)`),
+    doesn't raise when called — it just hands back an un-awaited
+    coroutine object. This previously either crashed confusingly
+    inside the later `float()` conversion or silently fell through to
+    `UNCERTAIN`, and either way leaked a "coroutine was never awaited"
+    `RuntimeWarning`. Now detected explicitly and rejected with a
+    clear `TypeError`, the same discipline `_run_validator()` already
+    applies to an async `validator`.
+- **Numeric and boolean `answer` values are now accepted instead of
+  treated as parse failures.** A model returning `{"answer": 42}` was
+  previously rejected outright by the `v0.4.8` non-string-answer guard,
+  which was written to stop a `dict`/`list` `answer` from being
+  silently `str()`-coerced into a misleading Python repr. That guard
+  was correct for structured values but too broad — a genuine scalar
+  like an `int`, `float`, or `bool` is not the same failure mode. `int`,
+  `float`, and `bool` answers are now coerced to their string form
+  (`42` → `"42"`) for the normalized `.answer` field, the same split
+  already used for `confidence` (`.confidence` is coerced,
+  `.parsed["confidence"]` keeps the raw value) — `.parsed["answer"]`
+  keeps the original, uncoerced type. `dict` and `list` values are
+  still rejected exactly as before; only the scalar case changed.
+- **`Attempt.error` was left `None` on most parse failures**, even
+  though a `call_fn` exception or a non-string `call_fn` return already
+  populated it with a specific reason. Every rejection path inside
+  `_parse_response()` (missing keys, wrong types, out-of-range
+  confidence, unrecognized `ambiguous` value, empty answer, no JSON
+  found at all) now records a specific, human-readable reason — e.g.
+  `"'confidence' 17.0 is out of the [0.0, 1.0] range"` — instead of
+  leaving the field blank on total parse failure.
+- **`evidence_threshold` had no type validation**, unlike `max_retries`
+  (fixed in `v0.4.8`). A `str` or `None` value produced Python's
+  generic comparison `TypeError` deep inside `0.0 <= evidence_threshold`
+  instead of a clear error at the call site. Now raises `TypeError`
+  immediately for anything that isn't a real number. Deliberately
+  stricter than `max_retries` on one point: `bool` is also rejected
+  here, not treated as harmless — a threshold silently becoming
+  "require a perfect 1.0" or "accept anything" is far more likely to
+  be a caller mistake than an intentional choice, unlike `max_retries`
+  where `True`/`False` meaning 1/0 retries is a reasonable reading.
+- **New regression test file** (`test_v049_regressions.py`, 31 tests)
+  covering all six items above, plus: the empty-answer guard correctly
+  exempting `AMBIGUOUS` attempts; the `raw_decode` fallback recovering
+  a nested-brace answer embedded in prose while a genuinely incomplete
+  JSON object (missing closing brace) still correctly fails safe;
+  `check_with_evidence()`'s non-str-`answer` and async-`compare_fn`
+  fixes producing zero leaked `RuntimeWarning`s (verified by promoting
+  `RuntimeWarning` to a raised exception for the duration of that
+  assertion); numeric/float/boolean `answer` values all coercing
+  correctly while `.parsed` keeps the raw type; and
+  `evidence_threshold` rejecting `str`/`None`/`bool` while still
+  accepting a plain `int` and still raising `ValueError` (not silently
+  swallowed by the new type check) for an in-type but out-of-range
+  value like `1.5`.
+- Verified against the actual published `v0.4.8` sdist pulled from
+  PyPI: all 177 existing tests across `test_acheck.py`,
+  `test_bugfixes_0_4_4.py`, `test_core.py`, `test_evidence.py`,
+  `test_method.py`, `test_parsed.py`, `test_v045_regressions.py`,
+  `test_v046_regressions.py`, `test_v047_regressions.py`, and
+  `test_validator.py` pass unmodified against the new `core.py` — no
+  existing test needed to change to accommodate this batch.
+
 ## [v0.4.8] — BREAKING: VERIFIED renamed to ACCEPTED; bugfix batch: async call_fn/non-str return/max_retries/non-str answer
 
 **BREAKING CHANGE:** `VERIFIED` is renamed to `ACCEPTED`. There is no
@@ -472,7 +582,8 @@ inspection, and every fix has a dedicated regression test.
   (not blind resampling) when confidence is below a configurable
   threshold. `VERIFIED` / `REPAIRED` / `UNCERTAIN` statuses.
 
-[Unreleased]: https://github.com/Vedantgitbot/booth/compare/v0.4.8...HEAD
+[Unreleased]: https://github.com/Vedantgitbot/booth/compare/v0.4.9...HEAD
+[v0.4.9]: https://github.com/Vedantgitbot/booth/releases/tag/v0.4.9
 [v0.4.8]: https://github.com/Vedantgitbot/booth/releases/tag/v0.4.8
 [v0.4.7]: https://github.com/Vedantgitbot/booth/releases/tag/v0.4.7
 [v0.4.6]: https://github.com/Vedantgitbot/booth/releases/tag/v0.4.6
