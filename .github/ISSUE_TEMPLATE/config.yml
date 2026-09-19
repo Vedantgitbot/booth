@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question about how to use BOOTH
+    url: https://github.com/Vedantgitbot/booth/discussions
+    about: For "how do I..." questions, please use Discussions rather than an Issue.
+  - name: TUTORIAL.md
+    url: https://github.com/Vedantgitbot/booth/blob/main/TUTORIAL.md
+    about: Check the Tutorial first — most "how does X work" questions are answered there.
+  - name: USECASES.md
+    url: https://github.com/Vedantgitbot/booth/blob/main/USECASES.md
+    about: Not sure if BOOTH is the right fit for what you're building? This covers where it helps and where it doesn't.

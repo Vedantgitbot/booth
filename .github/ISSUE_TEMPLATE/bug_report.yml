@@ -1,0 +1,105 @@
+name: Bug Report
+description: Something in check(), acheck(), or check_with_evidence() behaves incorrectly, with a reproduction.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this carefully.
+
+        Every fix BOOTH has shipped so far started from a reproduced failure, not a guess — see [CONTRIBUTING.md](../../CONTRIBUTING.md). The single most useful thing you can give here is a minimal `call_fn` (or `answer`/`evidence`/`compare_fn`, for `check_with_evidence()`) that reliably reproduces the problem. Issues without one are much slower to act on.
+
+        If you're reporting a strange piece of *raw LLM output* that BOOTH mishandles, rather than a bug in BOOTH's own logic, consider using the **Edge Case / LLM Output Quirk** template instead — it's a better fit for that.
+
+  - type: input
+    id: version
+    attributes:
+      label: BOOTH version
+      description: Output of `python -c "import booth; print(booth.__version__)"`
+      placeholder: "0.4.9"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: python-version
+    attributes:
+      label: Python version
+      options:
+        - "3.9"
+        - "3.10"
+        - "3.11"
+        - "3.12"
+        - Other (specify in Additional context)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: entry-point
+    attributes:
+      label: Which BOOTH function is involved?
+      options:
+        - check()
+        - acheck()
+        - check_with_evidence()
+        - Not sure / applies generally
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: >
+        A self-contained script that reproduces the issue. For check()/acheck(), include the
+        call_fn (with the exact string(s) it returns) and the check() call. For
+        check_with_evidence(), include the answer, evidence, and compare_fn. Remove anything
+        not needed to trigger the bug — the smaller, the faster this gets looked at.
+      render: python
+      placeholder: |
+        import booth
+
+        def call_fn(prompt):
+            return '{"answer": "...", "confidence": ...}'
+
+        result = booth.check(call_fn, "your prompt here")
+        print(result)
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect result.status / result.answer / result.method (etc.) to be?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: >
+        What actually happened — the real result.status/answer/method/error, a traceback if it
+        crashed, or a leaked warning if that's the issue.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context
+      description: Anything else worth knowing — OS, how you're calling your LLM provider, etc.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and didn't find this already reported.
+          required: true
+        - label: I reproduced this against the latest released version of BOOTH.
+          required: true

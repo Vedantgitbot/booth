@@ -1,0 +1,95 @@
+name: Edge Case / LLM Output Quirk
+description: A real model produced output that BOOTH parsed or handled in a way you didn't expect.
+title: "[Edge Case]: "
+labels: ["edge-case"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This template is for the specific, recurring source of BOOTH's bugfix releases so far
+        (0.4.4 through 0.4.9): a real model, under real conditions, produced a response shape
+        nobody had tried before — nested braces inside an answer, a boolean where a number was
+        expected, a numpy array as evidence, and so on.
+
+        If this is really a logic bug unrelated to a specific model's output (e.g. a status
+        transition that looks wrong given clean, well-formed input), the **Bug Report** template
+        is a better fit.
+
+        The most useful thing you can provide is the **exact raw text the model returned**,
+        unedited — paraphrasing it tends to accidentally "fix" the very thing that broke parsing.
+
+  - type: input
+    id: version
+    attributes:
+      label: BOOTH version
+      placeholder: "0.4.9"
+    validations:
+      required: true
+
+  - type: input
+    id: model
+    attributes:
+      label: Model / provider that produced this output
+      description: e.g. "GPT-4o", "Claude Sonnet", "Llama 3.1 8B via Ollama". Leave blank if unknown or not relevant.
+      placeholder: "e.g. GPT-4o"
+    validations:
+      required: false
+
+  - type: dropdown
+    id: entry-point
+    attributes:
+      label: Which BOOTH function received this output?
+      options:
+        - check()
+        - acheck()
+        - check_with_evidence() (as the answer or an evidence item)
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: raw-output
+    attributes:
+      label: Exact raw output from the model
+      description: >
+        Paste the literal, unedited text the model returned (what call_fn returned to BOOTH, or
+        what you passed as `answer`/an `evidence` item). Do not clean it up or summarize it —
+        the exact formatting is usually the point.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected-result
+    attributes:
+      label: What you expected BOOTH to do with it
+      description: e.g. "recover the answer 'Paris' via the fallback parser" or "reject this as UNCERTAIN, not ACCEPTED"
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual-result
+    attributes:
+      label: What BOOTH actually did
+      description: The real result.status, result.answer, result.method, and result.attempts[i].error if relevant.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context
+      description: Does this reproduce consistently, or only sometimes with this model? Anything else worth knowing?
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and didn't find this already reported.
+          required: true
+        - label: The raw output above is pasted exactly as BOOTH received it, not cleaned up or paraphrased.
+          required: true
