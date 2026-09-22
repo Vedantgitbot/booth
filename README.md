@@ -87,12 +87,12 @@ if result.status == booth.BLOCKED:
 
 ## What BOOTH provides today
 
-**v0.4.9**, zero-dependency, provider-agnostic, works with any LLM client you already have:
+**v0.5.0**, zero-dependency, provider-agnostic, works with any LLM client you already have:
 
 * ambiguity detection, confidence checking with genuine reconsideration retries, and an optional caller-supplied `validator`
 * `check_with_evidence()` for grounding an answer against evidence your own RAG pipeline already retrieved
 * sync and async APIs (`check()` / `acheck()`) with consistent callable-object support on both
-* structured results, including `result.method`, `result.parsed`, and `result.to_dict()`, instead of a raw string you have no reason to trust
+* structured results, including `result.method`, `result.parsed`, `result.to_dict()`, and `result.unwrap()` for a plain `str` (or a raised `BoothRejected`) instead of `Optional[str]` handling at every call site
 
 ---
 

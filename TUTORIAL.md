@@ -1004,6 +1004,51 @@ For other statuses it is `False`.
 
 ---
 
+## 9.1 `BoothResult.unwrap()`
+
+`unwrap()` is a stricter accessor added in `v0.5.0`. It returns `.answer` as a plain `str` when the result is ok, and raises `BoothRejected` otherwise:
+
+```python
+try:
+    answer = result.unwrap()
+except booth.BoothRejected as e:
+    print(f"Rejected: {e.result.status} ({e.result.method})")
+    answer = None
+```
+
+It uses exactly the same predicate as `.ok` — internally, `unwrap()` literally checks `self.ok` — so the two can never disagree.
+
+This does **not** change `.answer` itself. `.answer` stays populated on rejected results (`AMBIGUOUS`, `UNCERTAIN`, `BLOCKED`) exactly as before, intentionally, so you can still inspect what got rejected for debugging or logging. `unwrap()` is a stricter, opt-in accessor layered on top of that existing field, not a replacement for it.
+
+The main benefit is ergonomic: `.answer` is typed `Optional[str]`, so a type checker forces `None`-handling at every call site even though it can't tell "populated but rejected" from "genuinely missing." `unwrap()` returns a plain `str` — no `Optional` handling needed — because rejection becomes an exception instead of a value you might forget to check.
+
+### `BoothRejected`
+
+`BoothRejected` is the exception `unwrap()` raises. It carries the full `BoothResult` as `.result`, so you don't lose any diagnostic information by catching it:
+
+```python
+try:
+    answer = result.unwrap()
+except booth.BoothRejected as e:
+    print(e.result.status)       # e.g. "UNCERTAIN"
+    print(e.result.method)       # e.g. "parse_failure"
+    print(e.result.attempts)     # full attempt history, still there
+```
+
+The exception's own string message (`str(e)`) intentionally does **not** include the raw rejected answer text — exception messages routinely end up in logs, and BOOTH doesn't assume you want a rejected answer logged just because someone called `unwrap()`. If you need the rejected text itself, read it explicitly from `e.result.answer`.
+
+## 9.2 `BoothResult.unwrap_or()`
+
+`unwrap_or(default)` behaves like `unwrap()` but returns `default` instead of raising:
+
+```python
+answer = result.unwrap_or("Sorry, I don't have a reliable answer for that.")
+```
+
+Useful when a plain fallback value is simpler than a `try`/`except` at the call site.
+
+---
+
 # 10. `BoothResult.confidence`
 
 For:
@@ -1794,6 +1839,7 @@ The public package exports the following:
 from booth import (
     Attempt,
     BoothResult,
+    BoothRejected,
     check,
     acheck,
     check_with_evidence,
@@ -1822,6 +1868,7 @@ The primary result and type objects are:
 ```python
 booth.Attempt
 booth.BoothResult
+booth.BoothRejected
 booth.CompareFn
 booth.ValidatorFn
 ```
@@ -1857,12 +1904,13 @@ booth.DEFAULT_MAX_RETRIES
 
 ## Main types
 
-| Type          | Purpose                                |
-| ------------- | --------------------------------------- |
-| `Attempt`     | Represents one LLM attempt             |
-| `BoothResult` | Represents the final result            |
-| `CompareFn`   | Type for evidence comparison functions |
-| `ValidatorFn` | Type for custom answer validators      |
+| Type            | Purpose                                |
+| --------------- | --------------------------------------- |
+| `Attempt`       | Represents one LLM attempt             |
+| `BoothResult`   | Represents the final result            |
+| `BoothRejected` | Raised by `unwrap()` on a non-ok result |
+| `CompareFn`     | Type for evidence comparison functions |
+| `ValidatorFn`   | Type for custom answer validators      |
 
 ## Result statuses
 
@@ -1890,6 +1938,15 @@ result.all_parse_failed
 result.method
 result.parsed
 ```
+
+## Strict accessors
+
+```python
+result.unwrap()             # str, or raises BoothRejected
+result.unwrap_or(default)   # str, or `default` if not ok
+```
+
+Use these when you want a plain `str` back instead of handling `Optional[str]` at every call site — see §9.1/§9.2.
 
 ## Result serialization
 

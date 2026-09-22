@@ -9,6 +9,69 @@ surface bump the patch version.
 
 Nothing yet.
 
+## [v0.5.0] — BoothResult.unwrap() / unwrap_or() / BoothRejected; Development Status: Beta
+
+The first `0.x` release that's purely additive rather than a bugfix
+batch — no existing behavior changed, no existing test needed to
+change. `pyproject.toml`'s `Development Status` classifier moves from
+`3 - Alpha` to `4 - Beta`: ten releases in, with a consistent
+reproduce-first fix discipline and 208 tests carried forward with zero
+regressions across the whole run, BOOTH has moved past the
+"exploratory hack" stage this classifier is meant to signal.
+
+- **Added `BoothResult.unwrap()`.** `.answer` is typed
+  `Optional[str]` and stays populated even on a rejected result
+  (`AMBIGUOUS`/`UNCERTAIN`/`BLOCKED`) — deliberately, for debugging
+  and logging visibility — which means a caller who forgets to check
+  `.ok` or `.status` first can silently ship a rejected answer with no
+  error at all. `unwrap()` returns `.answer` as a plain `str` when the
+  result is ok, and raises `BoothRejected` otherwise. It uses exactly
+  the same predicate as `.ok` — it literally calls `self.ok`
+  internally rather than reimplementing the check — so the two can
+  never drift apart from each other. This is purely additive: `.answer`
+  is completely unchanged, on every status, for every existing caller.
+  `unwrap()` is a stricter, opt-in accessor layered on top, not a
+  replacement.
+- **Added `BoothRejected`**, the exception `unwrap()` raises. Carries
+  the full original `BoothResult` as `.result`, so catching it loses
+  no diagnostic information — `.result.status`, `.result.method`,
+  `.result.attempts`, everything is still reachable from inside the
+  `except` block. The exception's own string message deliberately
+  excludes the raw rejected answer text: exception messages routinely
+  end up in logs, and a rejected answer is exactly the kind of content
+  that shouldn't be logged by default just because someone called
+  `unwrap()`. The message does include `status` and `method`; the
+  rejected text itself is reachable explicitly via `e.result.answer`
+  if actually needed.
+- **Added `BoothResult.unwrap_or(default)`.** Same idea as `unwrap()`,
+  but returns `default` instead of raising when the result isn't ok —
+  for callers who'd rather write a plain fallback value than a
+  `try`/`except` at the call site.
+- **New regression test file** (`test_v050_regressions.py`, 20 tests)
+  covering: `unwrap()` returning the answer on `ACCEPTED` and
+  `REPAIRED`, from both `check()` and `acheck()` results, and from
+  `check_with_evidence()`; `unwrap()` raising `BoothRejected` on
+  `AMBIGUOUS`, `UNCERTAIN`, and `BLOCKED`; a parity test asserting
+  `unwrap()`'s predicate matches `.ok` exactly across every reachable
+  status, constructed as a single scenario matrix rather than five
+  separate near-duplicate tests; `.answer` confirmed still populated
+  on rejected results even after `unwrap()` has been called on the
+  same result object; `BoothRejected.result` carrying the exact same
+  object the caller already had; a planted "secret-looking" answer
+  string confirmed absent from `str(BoothRejected)` while still
+  reachable via `e.result.answer`; `unwrap_or()` returning the real
+  answer when ok and the default otherwise, and confirmed to never
+  raise regardless of status; and two defensive tests against a
+  hand-built `BoothResult` (not reachable through the public API) to
+  confirm `unwrap()` can't return `None` from a function typed to
+  return `str`.
+- Verified against the full test suite carried forward unmodified from
+  `v0.4.9` (208 tests across `test_acheck.py`, `test_core.py`,
+  `test_evidence.py`, `test_method.py`, `test_parsed.py`,
+  `test_validator.py`, and `test_v045_regressions.py` through
+  `test_v049_regressions.py`) — 228 total, zero modifications to any
+  existing test.
+
 ## [v0.4.9] — bugfix batch: empty-answer guard, brace-parsing fallback, check_with_evidence() robustness, numeric/bool answers, error reasons, evidence_threshold validation
 
 Six fixes, shipped together in the order below. All were reproduced
@@ -582,7 +645,8 @@ inspection, and every fix has a dedicated regression test.
   (not blind resampling) when confidence is below a configurable
   threshold. `VERIFIED` / `REPAIRED` / `UNCERTAIN` statuses.
 
-[Unreleased]: https://github.com/Vedantgitbot/booth/compare/v0.4.9...HEAD
+[Unreleased]: https://github.com/Vedantgitbot/booth/compare/v0.5.0...HEAD
+[v0.5.0]: https://github.com/Vedantgitbot/booth/releases/tag/v0.5.0
 [v0.4.9]: https://github.com/Vedantgitbot/booth/releases/tag/v0.4.9
 [v0.4.8]: https://github.com/Vedantgitbot/booth/releases/tag/v0.4.8
 [v0.4.7]: https://github.com/Vedantgitbot/booth/releases/tag/v0.4.7
