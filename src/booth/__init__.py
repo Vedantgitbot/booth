@@ -1,6 +1,7 @@
 from booth.core import (
     Attempt,
     BoothResult,
+    BoothRejected,
     check,
     acheck,
     check_with_evidence,
@@ -15,11 +16,12 @@ from booth.core import (
     DEFAULT_MAX_RETRIES,
 )
 
-__version__ = "0.4.9"
+__version__ = "0.5.0"
 
 __all__ = [
     "Attempt",
     "BoothResult",
+    "BoothRejected",
     "check",
     "acheck",
     "check_with_evidence",

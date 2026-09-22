@@ -81,6 +81,30 @@ class Attempt:
     parsed: Optional[dict] = None
 
 
+class BoothRejected(Exception):
+    """0.5.0: raised by BoothResult.unwrap() when the result is not ok
+    (status is AMBIGUOUS, UNCERTAIN, or BLOCKED). Carries the full
+    original BoothResult as `.result`, so a caller handling this
+    exception can still inspect `.status`, `.method`, `.attempts`, and
+    everything else — unwrap() trades away the answer, not the
+    diagnostics.
+
+    Deliberately excludes the raw answer/evidence text from the
+    exception's own string message: exception messages routinely end
+    up in logs, and a rejected answer is exactly the kind of content
+    that shouldn't be logged by default just because someone called
+    unwrap(). Inspect `.result.answer` explicitly if you need it."""
+
+    def __init__(self, result: "BoothResult"):
+        self.result = result
+        super().__init__(
+            f"BoothResult was not ok (status={result.status}, "
+            f"method={result.method}). Inspect the `.result` attribute "
+            f"on this exception for the full result, including "
+            f"`.result.answer` if you need the rejected text."
+        )
+
+
 @dataclass
 class BoothResult:
     answer: Optional[str]
@@ -115,6 +139,32 @@ class BoothResult:
         if not self.attempts[-1].passed_validation:
             return "validation"
         return "confidence"
+
+    def unwrap(self) -> str:
+        """0.5.0: returns `.answer` as a plain `str` if this result is
+        ok (ACCEPTED or REPAIRED) — uses exactly the same predicate as
+        `.ok`, so the two can never disagree. Raises BoothRejected
+        otherwise, carrying the full result on the exception.
+
+        This does not change `.answer` itself: it stays populated on
+        rejected results (AMBIGUOUS/UNCERTAIN/BLOCKED) exactly as
+        before, intentionally, for debugging and logging visibility
+        into what got rejected. unwrap() is a stricter, opt-in
+        accessor layered on top of that existing field, not a
+        replacement for it — use it when you want a plain `str` back
+        (no `Optional[str]` handling at every call site) and you'd
+        rather handle rejection as an exception than as an `if`."""
+        if not self.ok or self.answer is None:
+            raise BoothRejected(self)
+        return self.answer
+
+    def unwrap_or(self, default: str) -> str:
+        """0.5.0: like unwrap(), but returns `default` instead of
+        raising when the result isn't ok."""
+        try:
+            return self.unwrap()
+        except BoothRejected:
+            return default
 
     def to_dict(self) -> dict:
         """Includes computed properties too — asdict(self) alone would
