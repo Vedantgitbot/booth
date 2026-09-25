@@ -13,6 +13,19 @@ AMBIGUOUS = "AMBIGUOUS"
 BLOCKED = "BLOCKED"
 UNCERTAIN = "UNCERTAIN"
 
+# 0.5.1: fixed reason codes for check_with_evidence()'s UNCERTAIN/BLOCKED
+# results. Previously a caller got the same UNCERTAIN status for four
+# unrelated causes (blank answer, no evidence, a crashing comparator, a
+# malformed score) with no way to tell them apart short of re-reading
+# check_with_evidence()'s internals. These five codes are the full set —
+# check()/acheck() never set reason, so their results always carry
+# reason=None.
+EMPTY_ANSWER = "EMPTY_ANSWER"
+NO_EVIDENCE = "NO_EVIDENCE"
+EVIDENCE_DISAGREES = "EVIDENCE_DISAGREES"
+COMPARE_FAILED = "COMPARE_FAILED"
+INVALID_SCORE = "INVALID_SCORE"
+
 DEFAULT_THRESHOLD = 0.7
 DEFAULT_MAX_RETRIES = 1
 
@@ -115,6 +128,11 @@ class BoothResult:
     interpretations: List[str] = field(default_factory=list)
     evidence_agreement: Optional[float] = None
     parsed: Optional[dict] = None
+    # 0.5.1: populated only by check_with_evidence(). check()/acheck()
+    # results always carry reason=None, detail=None, checker_failed=False
+    # via these defaults — no code changes needed in those paths.
+    reason: Optional[str] = None
+    detail: Optional[str] = None
 
     @property
     def n_attempts(self) -> int:
@@ -127,6 +145,16 @@ class BoothResult:
     @property
     def all_parse_failed(self) -> bool:
         return bool(self.attempts) and all(not a.parse_ok for a in self.attempts)
+
+    @property
+    def checker_failed(self) -> bool:
+        """0.5.1: True iff `reason` is one of the two "checker fault"
+        codes (the comparator crashed, or returned something unusable
+        as a score) rather than a real verdict about the answer itself
+        (EMPTY_ANSWER, NO_EVIDENCE — caller's inputs were incomplete;
+        EVIDENCE_DISAGREES — a genuine, meaningful verdict). Derived
+        from `reason`, not separate state, so it can't drift from it."""
+        return self.reason in (COMPARE_FAILED, INVALID_SCORE)
 
     @property
     def method(self) -> str:
@@ -182,6 +210,9 @@ class BoothResult:
             "ok": self.ok,
             "all_parse_failed": self.all_parse_failed,
             "method": self.method,
+            "reason": self.reason,
+            "detail": self.detail,
+            "checker_failed": self.checker_failed,
         }
 
 
@@ -526,13 +557,27 @@ def check_with_evidence(
     if answer is not None and not isinstance(answer, str):
         raise TypeError(f"answer must be a str, got {type(answer).__name__}")
 
-    if not answer or not answer.strip() or _is_empty_evidence(evidence):
-        return BoothResult(answer=answer or None, status=UNCERTAIN, confidence=None)
+    # 0.5.1: split from the previous single combined `if` so
+    # EMPTY_ANSWER and NO_EVIDENCE — previously the same UNCERTAIN
+    # branch — are distinguishable via `reason`.
+    if not answer or not answer.strip():
+        return BoothResult(
+            answer=answer or None, status=UNCERTAIN, confidence=None,
+            reason=EMPTY_ANSWER, detail="answer was empty or whitespace-only",
+        )
+    if _is_empty_evidence(evidence):
+        return BoothResult(
+            answer=answer or None, status=UNCERTAIN, confidence=None,
+            reason=NO_EVIDENCE, detail="evidence sequence was empty",
+        )
 
     try:
         raw_result = compare_fn(answer, evidence)
-    except Exception:
-        return BoothResult(answer=answer, status=UNCERTAIN, confidence=None)
+    except Exception as e:
+        return BoothResult(
+            answer=answer, status=UNCERTAIN, confidence=None,
+            reason=COMPARE_FAILED, detail=f"{type(e).__name__}: {str(e)[:200]}",
+        )
 
     # 0.4.9 item 3: an async compare_fn (or a sync wrapper that itself
     # returns a coroutine, e.g. `lambda a, e: some_async_fn(a, e)`)
@@ -557,9 +602,17 @@ def check_with_evidence(
         try:
             score = float(raw_result)
         except (TypeError, ValueError):
-            return BoothResult(answer=answer, status=UNCERTAIN, confidence=None)
+            return BoothResult(
+                answer=answer, status=UNCERTAIN, confidence=None,
+                reason=INVALID_SCORE,
+                detail=f"compare_fn returned a non-numeric value: {raw_result!r}",
+            )
         if not 0.0 <= score <= 1.0:
-            return BoothResult(answer=answer, status=UNCERTAIN, confidence=None)
+            return BoothResult(
+                answer=answer, status=UNCERTAIN, confidence=None,
+                reason=INVALID_SCORE,
+                detail=f"compare_fn returned {score}, outside the [0.0, 1.0] range",
+            )
         passed = score >= evidence_threshold
 
     status = ACCEPTED if passed else BLOCKED
@@ -568,6 +621,8 @@ def check_with_evidence(
         status=status,
         confidence=score,
         evidence_agreement=score,
+        reason=None if passed else EVIDENCE_DISAGREES,
+        detail=None if passed else f"score {score} below evidence_threshold {evidence_threshold}",
     )
 
 

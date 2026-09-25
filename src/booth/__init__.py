@@ -12,11 +12,16 @@ from booth.core import (
     AMBIGUOUS,
     BLOCKED,
     UNCERTAIN,
+    EMPTY_ANSWER,
+    NO_EVIDENCE,
+    EVIDENCE_DISAGREES,
+    COMPARE_FAILED,
+    INVALID_SCORE,
     DEFAULT_THRESHOLD,
     DEFAULT_MAX_RETRIES,
 )
 
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 
 __all__ = [
     "Attempt",
@@ -32,6 +37,11 @@ __all__ = [
     "AMBIGUOUS",
     "BLOCKED",
     "UNCERTAIN",
+    "EMPTY_ANSWER",
+    "NO_EVIDENCE",
+    "EVIDENCE_DISAGREES",
+    "COMPARE_FAILED",
+    "INVALID_SCORE",
     "DEFAULT_THRESHOLD",
     "DEFAULT_MAX_RETRIES",
 ]
