@@ -9,6 +9,83 @@ surface bump the patch version.
 
 Nothing yet.
 
+## [v0.5.1] — check_with_evidence() reason / detail / checker_failed
+
+`check_with_evidence()` previously returned `UNCERTAIN` from a single
+construction site reused for four unrelated causes — a blank answer,
+empty evidence, a crashing `compare_fn`, and a malformed score — plus
+one further `BLOCKED` site for a genuine evidence disagreement. A
+caller had no way to distinguish "your evidence list was empty, fix
+your retrieval" from "your comparator crashed, fix your code" from
+"the answer genuinely disagreed, that's a real verdict" without
+reading `check_with_evidence()`'s internals — internals that don't
+even populate `attempts`, so the usual `result.method` /
+`result.attempts` diagnostic path this library relies on elsewhere
+doesn't apply on this path at all.
+
+- **Added `BoothResult.reason: Optional[str]`.** Populated only by
+  `check_with_evidence()`; `None` on every `check()`/`acheck()`
+  result, via the existing dataclass default — no code changes needed
+  in either of those paths. One of five fixed string codes:
+  - `EMPTY_ANSWER` — the answer was empty or whitespace-only
+  - `NO_EVIDENCE` — the evidence sequence was empty
+  - `COMPARE_FAILED` — `compare_fn` raised an exception
+  - `INVALID_SCORE` — `compare_fn` returned something that couldn't be
+    used as a score: non-numeric, or numeric but outside `[0.0, 1.0]`
+  - `EVIDENCE_DISAGREES` — a genuine comparison ran and the answer
+    scored below `evidence_threshold` (the existing `BLOCKED` case)
+- **Added `BoothResult.detail: Optional[str]`.** Free text describing
+  the specific instance — e.g. `"evidence sequence was empty"`, or for
+  a crashing `compare_fn`, the exception type and a truncated message
+  (`f"{type(e).__name__}: {str(e)[:200]}"`, matching the existing
+  truncation discipline already used for `Attempt.error` and
+  `BoothRejected`'s message — never dump a raw, unbounded exception
+  into a result). `None` whenever `reason` is `None`.
+- **Added `BoothResult.checker_failed: bool`**, a computed property —
+  no new stored state — `True` iff `reason` is `COMPARE_FAILED` or
+  `INVALID_SCORE`. These two codes mean the *checker itself* is at
+  fault (a broken comparator, a caller bug), as distinct from
+  `EMPTY_ANSWER`/`NO_EVIDENCE` (the caller's inputs were incomplete)
+  or `EVIDENCE_DISAGREES` (a real, meaningful verdict about the
+  answer). Because it's derived from `reason` rather than set
+  separately, it can never drift out of sync with it.
+- **One structural change, contained entirely inside
+  `check_with_evidence()`:** the previous combined
+  `if not answer or not answer.strip() or _is_empty_evidence(evidence)`
+  guard is split into two separate `if` checks, since `EMPTY_ANSWER`
+  and `NO_EVIDENCE` need to be distinguishable and were previously the
+  same branch. No other control flow changed — every other edit is a
+  bare `BoothResult(...)` return gaining `reason=`/`detail=` keyword
+  arguments, with no new branches.
+- **`to_dict()`** gained the three new keys (`"reason"`, `"detail"`,
+  `"checker_failed"`), same mechanical one-line-per-field pattern
+  already used for every other field there.
+- **Zero edits** to `_evaluate()`, `_next_prompt()`,
+  `_parse_response()`, `_finalize_uncertain()`, `check()`, or
+  `acheck()`. Appending two new `Optional`-with-`None`-default fields
+  to the `BoothResult` dataclass is positionally safe because every
+  existing `BoothResult(...)` construction site in the codebase
+  already uses keyword arguments — confirmed by scanning all five
+  pre-existing sites (`_evaluate`'s two, `_finalize_uncertain`,
+  `check_with_evidence`'s original two) before making the change.
+- **New regression tests** covering all five reason codes reachable
+  from `check_with_evidence()`, `checker_failed` returning `True` only
+  for `COMPARE_FAILED`/`INVALID_SCORE` and `False` for every other
+  reason (including `None`), `reason`/`detail`/`checker_failed` all
+  defaulting correctly (`None`/`None`/`False`) on `check()` and
+  `acheck()` results, `to_dict()` including all three new keys, and a
+  truncation check confirming a `compare_fn` exception with a very
+  long message is cut to 200 characters in `detail` rather than
+  reproduced in full.
+- **Packaging:** the logo `<img>` in `README.md` used a path relative
+  to the repo (`assets/Booth_logo.png`). GitHub resolves that against
+  the repo tree and renders it fine; PyPI renders `long_description`
+  in isolation with no base URL to resolve a relative path against, so
+  the same README rendered on the PyPI project page with a broken
+  image. Changed to an absolute
+  `https://raw.githubusercontent.com/...` URL, which resolves
+  identically on both GitHub and PyPI. No content change otherwise.
+
 ## [v0.5.0] — BoothResult.unwrap() / unwrap_or() / BoothRejected; Development Status: Beta
 
 The first `0.x` release that's purely additive rather than a bugfix
@@ -645,7 +722,8 @@ inspection, and every fix has a dedicated regression test.
   (not blind resampling) when confidence is below a configurable
   threshold. `VERIFIED` / `REPAIRED` / `UNCERTAIN` statuses.
 
-[Unreleased]: https://github.com/Vedantgitbot/booth/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/Vedantgitbot/booth/compare/v0.5.1...HEAD
+[v0.5.1]: https://github.com/Vedantgitbot/booth/releases/tag/v0.5.1
 [v0.5.0]: https://github.com/Vedantgitbot/booth/releases/tag/v0.5.0
 [v0.4.9]: https://github.com/Vedantgitbot/booth/releases/tag/v0.4.9
 [v0.4.8]: https://github.com/Vedantgitbot/booth/releases/tag/v0.4.8

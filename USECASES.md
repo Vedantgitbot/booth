@@ -344,6 +344,8 @@ should generally **not** be interpreted as:
 
 It means the answer passed the checkpoint that your application configured.
 
+As of `v0.5.1`, a `check_with_evidence()` result also carries `result.reason` and `result.detail`, and the computed `result.checker_failed`. These help you separate "your `compare_fn` itself broke" (`reason` is `COMPARE_FAILED` or `INVALID_SCORE`, `checker_failed` is `True`) from "the comparison ran fine and the answer genuinely disagreed" (`reason` is `EVIDENCE_DISAGREES`) — but they still can't tell you whether a *passing* comparison is trustworthy. A weak or wrong `compare_fn` that always returns `True` never sets `reason` at all, because from BOOTH's perspective nothing went wrong. `reason`/`checker_failed` narrow down *why a check failed*; they are not a measure of how good your comparator is.
+
 ---
 
 # 8. Good Use Case: Human-in-the-Loop Systems
@@ -391,6 +393,8 @@ BLOCKED
 ```
 
 The exact policy is application-specific.
+
+For a `check_with_evidence()` result specifically, `result.checker_failed` is a useful routing signal on top of `status`: a `checker_failed=True` result usually belongs on an engineering alert queue (your comparator broke), while a `checker_failed=False` `UNCERTAIN`/`BLOCKED` result (incomplete input, or a real disagreement) usually belongs on a human-review or retry queue instead.
 
 ---
 
@@ -440,6 +444,18 @@ for attempt in result.attempts:
 ```
 
 BOOTH therefore works well as an instrumentation point around an LLM workflow.
+
+`check_with_evidence()` results have no `attempts` to loop over (it's always `[]` there), so the equivalent logging fields for that path are `result.reason` and `result.detail`:
+
+```python
+if result.method == "evidence" and not result.ok:
+    log({
+        "status": result.status,
+        "reason": result.reason,
+        "detail": result.detail,
+        "checker_failed": result.checker_failed,
+    })
+```
 
 ---
 
@@ -982,6 +998,8 @@ will produce a high score regardless of the actual relationship between answer a
 
 BOOTH cannot fix a bad comparator.
 
+Note the distinction from `result.checker_failed`: that property is `True` when `compare_fn` *crashes* or returns something unusable as a score — a broken comparator BOOTH can actually detect. A comparator that runs without error but is simply badly designed, like the `return 0.9` example above, produces a normal-looking `ACCEPTED` or `BLOCKED` result with `checker_failed=False`, because nothing about the call itself failed. `checker_failed` catches crashes and malformed returns, not bad logic.
+
 ---
 
 # 28. `BLOCKED` Does Not Mean "Factually False"
@@ -992,7 +1010,7 @@ When `check_with_evidence()` produces:
 BLOCKED
 ```
 
-it means the supplied comparison did not meet the configured evidence threshold.
+it means the supplied comparison did not meet the configured evidence threshold. As of `v0.5.1`, this specific case always carries `result.reason == booth.EVIDENCE_DISAGREES`, since `BLOCKED` has only ever had one cause — it's the one status/reason pair that's a fixed 1:1 mapping.
 
 It does not necessarily mean:
 
@@ -1011,7 +1029,7 @@ the comparator is poorly designed
 the threshold is too high
 ```
 
-Your application needs to distinguish these cases if they matter.
+Your application needs to distinguish these cases if they matter. `result.detail` gives you the numeric score and threshold that produced the `BLOCKED` result (e.g. `"score 0.62 below evidence_threshold 0.8"`), which is a start — but it can't tell you *which* of the explanations above is the true one; that judgment still requires your own domain knowledge of the comparator and the evidence.
 
 ---
 
@@ -1027,7 +1045,7 @@ means BOOTH could not accept the result.
 
 It does not tell you that the answer is definitely wrong.
 
-For example, an answer can become `UNCERTAIN` because:
+For `check()`/`acheck()` results, `UNCERTAIN` can happen because:
 
 ```text
 the model returned malformed JSON
@@ -1059,6 +1077,8 @@ result.attempts
 ```
 
 when your application needs to understand why.
+
+For a `check_with_evidence()` result, `UNCERTAIN` means one of four distinct things — the answer was empty, the evidence was empty, `compare_fn` crashed, or `compare_fn` returned something unusable as a score — and as of `v0.5.1` these are directly distinguishable via `result.reason` (one of `EMPTY_ANSWER`, `NO_EVIDENCE`, `COMPARE_FAILED`, `INVALID_SCORE`) without needing to infer the cause from `result.detail`'s free text. `check_with_evidence()` never populates `result.attempts` — `result.reason`/`result.detail` are that path's equivalent diagnostic surface. As always, a specific `reason` tells you *why BOOTH couldn't accept the result*, not whether the underlying answer was actually correct.
 
 ---
 

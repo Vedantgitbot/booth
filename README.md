@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/Booth_logo.png" alt="BOOTH logo" width="220">
+  <img src="https://raw.githubusercontent.com/Vedantgitbot/booth/main/assets/Booth_logo.png" alt="BOOTH logo" width="220">
 </p>
 
 # BOOTH
@@ -64,7 +64,7 @@ result = booth.check_with_evidence(
 )
 
 if result.status == booth.BLOCKED:
-    print("The answer doesn't agree with what was actually retrieved.")
+    print(f"The answer doesn't agree with what was actually retrieved: {result.detail}")
 ```
 
 (The specific fabricated number will vary from run to run, that's just uncalibrated sampling. The pattern is the reliable part.)
@@ -82,17 +82,19 @@ if result.status == booth.BLOCKED:
 7. **Keep evidence retrieval outside BOOTH.** Applications own their own RAG, search, database, or tool infrastructure.
 8. **Do not pretend agreement is truth.** Agreement with a validator, confidence value, or retrieved evidence is not the same as proving a claim.
 9. **Stay provider-agnostic.** BOOTH works with any LLM provider because your application supplies the model-calling function.
+10. **Don't collapse distinct failures into one bucket.** A blank input, a crashing dependency, and a genuine disagreement are different problems and should be distinguishable without reading BOOTH's own source.
 
 ---
 
 ## What BOOTH provides today
 
-**v0.5.0**, zero-dependency, provider-agnostic, works with any LLM client you already have:
+**v0.5.1**, zero-dependency, provider-agnostic, works with any LLM client you already have:
 
 * ambiguity detection, confidence checking with genuine reconsideration retries, and an optional caller-supplied `validator`
 * `check_with_evidence()` for grounding an answer against evidence your own RAG pipeline already retrieved
 * sync and async APIs (`check()` / `acheck()`) with consistent callable-object support on both
 * structured results, including `result.method`, `result.parsed`, `result.to_dict()`, and `result.unwrap()` for a plain `str` (or a raised `BoothRejected`) instead of `Optional[str]` handling at every call site
+* on `check_with_evidence()` results, `result.reason`, `result.detail`, and `result.checker_failed` — so an `UNCERTAIN`/`BLOCKED` result tells you *which* of five distinct causes produced it, instead of forcing you to guess from `status` alone
 
 ---
 

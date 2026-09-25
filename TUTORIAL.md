@@ -685,6 +685,8 @@ result = booth.check_with_evidence(
 )
 ```
 
+As of `v0.5.1`, every non-`ACCEPTED` result from `check_with_evidence()` also carries a specific `reason` code and a human-readable `detail` string explaining exactly which of five distinct causes produced it — see §7.8 below. Ordinary `check()`/`acheck()` results are unaffected: their `reason` and `detail` are always `None`.
+
 ---
 
 ## 7.1 `answer`
@@ -701,11 +703,12 @@ In that case BOOTH returns:
 
 ```python
 result.status == booth.UNCERTAIN
+result.reason == booth.EMPTY_ANSWER
 ```
 
 and does not call `compare_fn`.
 
-`answer=None` is treated the same way — a missing answer, `UNCERTAIN`, no call to `compare_fn`. Any other non-`str` value (an `int`, a `list`, etc.) is a genuine caller mistake rather than a "missing" case, and as of `v0.4.9` raises `TypeError` immediately instead of crashing later with a confusing `AttributeError`:
+`answer=None` is treated the same way — a missing answer, `UNCERTAIN` with `reason=booth.EMPTY_ANSWER`, no call to `compare_fn`. Any other non-`str` value (an `int`, a `list`, etc.) is a genuine caller mistake rather than a "missing" case, and as of `v0.4.9` raises `TypeError` immediately instead of crashing later with a confusing `AttributeError`:
 
 ```python
 booth.check_with_evidence(answer=123, evidence=["e"], compare_fn=my_compare_fn)
@@ -736,7 +739,12 @@ The evidence sequence must not be empty:
 []
 ```
 
-is rejected.
+is rejected, with:
+
+```python
+result.status == booth.UNCERTAIN
+result.reason == booth.NO_EVIDENCE
+```
 
 The content of the evidence is otherwise the application's responsibility.
 
@@ -773,6 +781,16 @@ A real application would normally use a more appropriate comparison method.
 
 `compare_fn` must be synchronous. An `async def compare_fn`, or a synchronous function that internally calls an async comparator and returns the resulting coroutine without awaiting it, is rejected with `TypeError` as of `v0.4.9` — previously this either crashed confusingly or silently fell through to `UNCERTAIN`, and either way leaked a "coroutine was never awaited" warning. This mirrors the treatment `validator` already gets in `check()`/`acheck()`: if your comparison needs to await something, resolve it before calling `check_with_evidence()` and pass a plain sync function.
 
+If `compare_fn` raises any other exception, BOOTH does not propagate it. It's caught and turned into:
+
+```python
+result.status == booth.UNCERTAIN
+result.reason == booth.COMPARE_FAILED
+result.checker_failed == True
+```
+
+with `result.detail` containing the exception type and a truncated message, e.g. `"ValueError: division by zero"`. As of `v0.5.1`, this is the fault of the comparator, not the answer — `checker_failed` is `True` here so your application can distinguish "the checker itself broke" from "the answer just didn't hold up" without string-matching `detail`. See §7.8.
+
 ---
 
 ## 7.4 Boolean comparison
@@ -799,6 +817,7 @@ produces:
 
 ```python
 BLOCKED
+result.reason == booth.EVIDENCE_DISAGREES
 ```
 
 Boolean results are treated as strict pass/fail results. This includes `numpy.bool_`, recognized the same way as a native `bool`.
@@ -843,6 +862,16 @@ A score below the threshold produces:
 
 ```python
 BLOCKED
+result.reason == booth.EVIDENCE_DISAGREES
+result.detail  # e.g. "score 0.62 below evidence_threshold 0.8"
+```
+
+A return value that can't be used as a score at all — non-numeric, or numeric but outside `[0.0, 1.0]` — is a different failure from a genuine disagreement, and gets its own reason:
+
+```python
+result.status == booth.UNCERTAIN
+result.reason == booth.INVALID_SCORE
+result.checker_failed == True
 ```
 
 `evidence_threshold` must be a real number (`int` or `float`). As of `v0.4.9`, a `str`, `None`, or `bool` value raises `TypeError` immediately — the same treatment `max_retries` already got in `v0.4.8` — rather than failing later with a confusing generic comparison error. `bool` is rejected here specifically (unlike `max_retries`, where `True`/`False` are harmlessly treated as 1/0): a threshold silently becoming "require a perfect 1.0 score" or "accept anything" is far more likely to be a caller mistake than an intentional choice.
@@ -893,6 +922,70 @@ It is simply an evidence comparison gate.
 
 ---
 
+## 7.8 `reason`, `detail`, and `checker_failed`
+
+Before `v0.5.1`, `check_with_evidence()` returned `UNCERTAIN` from a single construction site reused for four unrelated causes — a blank answer, empty evidence, a crashing `compare_fn`, and a malformed score — with `status` alone giving no way to tell them apart. `reason` fixes that.
+
+`reason` is one of five fixed string codes, set only by `check_with_evidence()`:
+
+| Code                  | Status       | Meaning                                                          | `checker_failed` |
+| --------------------- | ------------ | ----------------------------------------------------------------- | ----------------- |
+| `EMPTY_ANSWER`         | `UNCERTAIN`  | `answer` was empty, whitespace-only, or `None`                    | `False`           |
+| `NO_EVIDENCE`          | `UNCERTAIN`  | `evidence` was an empty sequence                                  | `False`           |
+| `COMPARE_FAILED`       | `UNCERTAIN`  | `compare_fn` raised an exception                                  | `True`            |
+| `INVALID_SCORE`        | `UNCERTAIN`  | `compare_fn` returned something unusable as a score               | `True`            |
+| `EVIDENCE_DISAGREES`   | `BLOCKED`    | a real comparison ran, and the answer scored below the threshold  | `False`           |
+
+`result.detail` is a free-text string with the specifics of that particular case — for example, which exception type and message caused a `COMPARE_FAILED`, or what the score and threshold were for `EVIDENCE_DISAGREES`. Treat `reason` as the thing to branch on programmatically, and `detail` as the thing to log or show a human — `detail`'s exact wording isn't part of the stable API.
+
+`checker_failed` is a computed property:
+
+```python
+@property
+def checker_failed(self) -> bool:
+    return self.reason in (COMPARE_FAILED, INVALID_SCORE)
+```
+
+It's `True` only when the *checker itself* is at fault — a broken `compare_fn`, or one returning garbage — as opposed to the caller's input being incomplete (`EMPTY_ANSWER`/`NO_EVIDENCE`) or the comparison producing a real, meaningful verdict (`EVIDENCE_DISAGREES`). This is a useful triage signal: `checker_failed=True` usually means "alert an engineer, your comparator is broken," while the other reasons usually mean "this specific input/answer didn't check out."
+
+`check()` and `acheck()` results are unaffected. `reason` and `detail` default to `None` and `checker_failed` is always `False` on those results — no code runs to set them, it's just the dataclass default.
+
+Example: branching on `reason` instead of trying to interpret `status` alone.
+
+```python
+result = booth.check_with_evidence(
+    answer=llm_answer,
+    evidence=retrieved_docs,
+    compare_fn=my_compare_fn,
+)
+
+if result.ok:
+    use(result.answer)
+elif result.checker_failed:
+    log.error(f"compare_fn broke: {result.detail}")
+    escalate_to_engineer(result)
+elif result.reason == booth.EVIDENCE_DISAGREES:
+    log.info(f"Answer didn't match evidence: {result.detail}")
+    escalate_to_human_review(result)
+elif result.reason in (booth.EMPTY_ANSWER, booth.NO_EVIDENCE):
+    log.warning(f"Incomplete input: {result.detail}")
+    retry_upstream_pipeline()
+```
+
+Import the codes from the package root:
+
+```python
+from booth import (
+    EMPTY_ANSWER,
+    NO_EVIDENCE,
+    EVIDENCE_DISAGREES,
+    COMPARE_FAILED,
+    INVALID_SCORE,
+)
+```
+
+---
+
 # 8. `BoothResult`
 
 `check()`, `acheck()`, and `check_with_evidence()` return a:
@@ -918,6 +1011,9 @@ result.interpretations
 result.all_parse_failed
 result.method
 result.parsed
+result.reason
+result.detail
+result.checker_failed
 ```
 
 ---
@@ -972,11 +1068,11 @@ The model identified multiple interpretations of the question.
 
 ### `UNCERTAIN`
 
-BOOTH could not obtain an acceptable result.
+BOOTH could not obtain an acceptable result. From `check_with_evidence()`, check `result.reason` (§7.8) to see which of `EMPTY_ANSWER`, `NO_EVIDENCE`, `COMPARE_FAILED`, or `INVALID_SCORE` produced it.
 
 ### `BLOCKED`
 
-The answer failed the evidence comparison performed by `check_with_evidence()`.
+The answer failed the evidence comparison performed by `check_with_evidence()`. `result.reason` is `EVIDENCE_DISAGREES` here.
 
 ---
 
@@ -1032,6 +1128,7 @@ try:
 except booth.BoothRejected as e:
     print(e.result.status)       # e.g. "UNCERTAIN"
     print(e.result.method)       # e.g. "parse_failure"
+    print(e.result.reason)       # e.g. "EMPTY_ANSWER", from check_with_evidence()
     print(e.result.attempts)     # full attempt history, still there
 ```
 
@@ -1046,6 +1143,15 @@ answer = result.unwrap_or("Sorry, I don't have a reliable answer for that.")
 ```
 
 Useful when a plain fallback value is simpler than a `try`/`except` at the call site.
+
+## 9.3 `BoothResult.checker_failed`
+
+`checker_failed` is a computed property, `True` only on a `check_with_evidence()` result whose `reason` is `COMPARE_FAILED` or `INVALID_SCORE` — i.e. the comparator itself broke, rather than the answer failing a real comparison. Always `False` on `check()`/`acheck()` results. See §7.8 for the full breakdown and a triage example.
+
+```python
+if result.checker_failed:
+    alert_engineering(result.detail)
+```
 
 ---
 
@@ -1124,6 +1230,8 @@ attempt.passed_validation
 attempt.validation_error
 attempt.parsed
 ```
+
+`check_with_evidence()` results always have `attempts == []` — that path never populates `Attempt` objects at all, which is exactly why `result.reason`/`result.detail` (§7.8) exist: they're the equivalent diagnostic surface for a path that has no attempt history to inspect.
 
 ---
 
@@ -1361,6 +1469,8 @@ if result.status == booth.UNCERTAIN:
 
 If `all_parse_failed` is false, the model may have produced parseable responses that were rejected for another reason, such as validation or insufficient confidence.
 
+This property is specific to `check()`/`acheck()` results — a `check_with_evidence()` result has no attempts to inspect, so use `result.reason` (§7.8) there instead.
+
 ---
 
 # 18. `BoothResult.method`
@@ -1403,11 +1513,7 @@ The meanings are:
 
 `method` describes the determining mechanism rather than being a complete history of every attempt.
 
-For the complete history, inspect:
-
-```python
-result.attempts
-```
+For the complete history on a `check()`/`acheck()` result, inspect `result.attempts`. For a `check_with_evidence()` result — where `method` is always `"evidence"` and there's no attempt history — inspect `result.reason` and `result.detail` instead (§7.8) for the equivalent level of detail.
 
 ---
 
@@ -1554,6 +1660,7 @@ It includes the normal result fields as well as computed properties such as:
 ```python
 payload["ok"]
 payload["method"]
+payload["checker_failed"]
 ```
 
 This is important because:
@@ -1562,7 +1669,7 @@ This is important because:
 dataclasses.asdict(result)
 ```
 
-does not automatically include properties such as `ok` and `method`.
+does not automatically include properties such as `ok`, `method`, and `checker_failed`.
 
 Example:
 
@@ -1581,6 +1688,8 @@ print(payload["method"])
 
 json.dumps(payload)
 ```
+
+As of `v0.5.1`, `payload` also always contains `"reason"` and `"detail"` — `None` for `check()`/`acheck()` results, populated for `check_with_evidence()` results (§7.8).
 
 `to_dict()` is useful for:
 
@@ -1615,6 +1724,20 @@ if result.status == booth.ACCEPTED:
 ```
 
 **Note (v0.4.8):** this status was previously named `VERIFIED`. It has been renamed to `ACCEPTED`, with no backward-compatible alias. `from booth import VERIFIED` now raises `ImportError`, and the status *string* itself changed too (`"VERIFIED"` → `"ACCEPTED"`), so any code comparing against a hardcoded string literal instead of the exported constant needs updating as well.
+
+## 21.1 Reason Codes
+
+As of `v0.5.1`, BOOTH also exposes five reason codes, set only on `check_with_evidence()` results (§7.8):
+
+```python
+booth.EMPTY_ANSWER
+booth.NO_EVIDENCE
+booth.EVIDENCE_DISAGREES
+booth.COMPARE_FAILED
+booth.INVALID_SCORE
+```
+
+These are a distinct, smaller set from the status constants above — `reason` narrows down *why* a `check_with_evidence()` result came back `UNCERTAIN` or `BLOCKED`, it doesn't replace `status`. Use `result.status` for the coarse ACCEPTED/BLOCKED/UNCERTAIN outcome, and `result.reason` for the specific cause.
 
 ---
 
@@ -1799,6 +1922,9 @@ For example:
 ```python
 if b_result.ok and evidence_result.ok:
     final_answer = b_result.answer
+elif evidence_result.checker_failed:
+    final_answer = None
+    alert_engineering(evidence_result.detail)
 else:
     final_answer = None
 ```
@@ -1829,6 +1955,8 @@ for index, attempt in enumerate(result.attempts):
 
 This gives you more information than `result.status` alone.
 
+For a `check_with_evidence()` result, there's no attempt history to loop over — go straight to `result.reason` and `result.detail` instead (§7.8).
+
 ---
 
 # 29. Public API
@@ -1850,6 +1978,11 @@ from booth import (
     AMBIGUOUS,
     BLOCKED,
     UNCERTAIN,
+    EMPTY_ANSWER,
+    NO_EVIDENCE,
+    EVIDENCE_DISAGREES,
+    COMPARE_FAILED,
+    INVALID_SCORE,
     DEFAULT_THRESHOLD,
     DEFAULT_MAX_RETRIES,
 )
@@ -1881,6 +2014,16 @@ booth.REPAIRED
 booth.AMBIGUOUS
 booth.UNCERTAIN
 booth.BLOCKED
+```
+
+The reason codes (`check_with_evidence()` results only, added `v0.5.1`) are:
+
+```python
+booth.EMPTY_ANSWER
+booth.NO_EVIDENCE
+booth.EVIDENCE_DISAGREES
+booth.COMPARE_FAILED
+booth.INVALID_SCORE
 ```
 
 The default configuration constants are:
@@ -1922,6 +2065,18 @@ booth.DEFAULT_MAX_RETRIES
 | `UNCERTAIN` | No acceptable result was produced              |
 | `BLOCKED`   | Evidence comparison failed                     |
 
+## `check_with_evidence()` reason codes (v0.5.1+)
+
+| Reason                | Status      | `checker_failed` |
+| ---------------------- | ----------- | ----------------- |
+| `EMPTY_ANSWER`          | `UNCERTAIN` | `False`            |
+| `NO_EVIDENCE`           | `UNCERTAIN` | `False`            |
+| `COMPARE_FAILED`        | `UNCERTAIN` | `True`             |
+| `INVALID_SCORE`         | `UNCERTAIN` | `True`             |
+| `EVIDENCE_DISAGREES`    | `BLOCKED`   | `False`            |
+
+See §7.8 for the full breakdown.
+
 ## Important result properties
 
 ```python
@@ -1937,6 +2092,9 @@ result.interpretations
 result.all_parse_failed
 result.method
 result.parsed
+result.reason
+result.detail
+result.checker_failed
 ```
 
 ## Strict accessors
@@ -1985,9 +2143,11 @@ For evidence:
 ```text
 check_with_evidence()
   │
-  ├── receive answer
-  ├── receive evidence
-  ├── call compare_fn
+  ├── receive answer         → empty/whitespace? reason=EMPTY_ANSWER
+  ├── receive evidence       → empty sequence?   reason=NO_EVIDENCE
+  ├── call compare_fn        → raised?           reason=COMPARE_FAILED
+  ├── interpret the result   → unusable score?   reason=INVALID_SCORE
+  ├── compare to threshold   → below threshold?  reason=EVIDENCE_DISAGREES
   └── return BoothResult
 ```
 
