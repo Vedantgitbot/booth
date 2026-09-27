@@ -8,6 +8,77 @@ surface bump the patch version.
 ## [Unreleased]
 
 Nothing yet.
+## [v0.5.2] — check_with_evidence() whitespace-answer / boolean-detail fixes; prompt/call_fn type validation
+
+Three fixes, shipped together. The first two are contained inside
+`check_with_evidence()`, in the same spirit as v0.5.1's reason/detail
+work; the third closes a validation gap in `check()`/`acheck()` left
+over after `max_retries` (v0.4.8) and `evidence_threshold` (v0.4.9)
+were hardened but `prompt`/`call_fn` themselves were not.
+
+- **Whitespace-only `answer` was not normalized to `None` in the
+  `EMPTY_ANSWER` result.** The `EMPTY_ANSWER` branch returned
+  `answer=answer or None`, which only normalizes a falsy (empty)
+  string — a whitespace-only string like `"   "` is truthy in Python,
+  so it passed through into `.answer` untouched, even though the same
+  branch's `detail` already reads `"answer was empty or
+  whitespace-only"` for both cases. Two inputs producing an identical
+  `status`/`reason`/`detail` triple ended up with different `.answer`
+  representations (`None` vs. the literal whitespace string). Since
+  the entire premise of this branch is "there is no usable answer",
+  `.answer` is now unconditionally `None` here for both the
+  empty-string and whitespace-only cases.
+- **`BLOCKED` result `detail` implied a threshold comparison even for
+  a boolean `compare_fn` rejection.** §7.4 documents that
+  `evidence_threshold` is not applied at all to a boolean
+  `compare_fn` return — it's treated as a strict pass/fail. But the
+  `detail` string on a `BLOCKED` result was built from shared code
+  that always read `f"score {score} below evidence_threshold
+  {evidence_threshold}"`, regardless of which path produced it. A
+  `compare_fn` returning `False` therefore produced a `detail`
+  describing a threshold comparison that never actually happened —
+  misleading for exactly the audience `detail` is documented to serve
+  (§7.8: "the thing to log or show a human"). The boolean path now
+  produces `detail="compare_fn returned False"`; the numeric/score
+  path is unchanged.
+- **`check()`/`acheck()` had no type validation for `prompt` or
+  `call_fn`.** Every other entry-point argument (`threshold`,
+  `max_retries`, `evidence_threshold`) has raised a clear `TypeError`
+  at the call site since v0.4.8/v0.4.9, but `check(fn, 123)` still
+  crashed several frames deep inside `_build_prompt()` with a bare
+  `AttributeError: 'int' object has no attribute 'rstrip'`, and a
+  non-callable `call_fn` crashed with a generic `TypeError` from deep
+  inside the retry loop instead of a message naming the actual
+  mistake. New `_validate_call_args()` checks `isinstance(prompt,
+  str)` and `callable(call_fn)` up front in both `check()` and
+  `acheck()`, before any other validation runs — same discipline,
+  same message shape, as the existing guards.
+- **New regression test file** (`test_v052_regressions.py`) covering:
+  an empty-string and a whitespace-only `answer` both producing
+  `result.answer is None` (previously only the empty-string case did);
+  `detail` for both cases still reading `"answer was empty or
+  whitespace-only"`; a boolean-`False` `compare_fn` producing
+  `detail == "compare_fn returned False"` with no `evidence_threshold`
+  value appearing in it; a numeric `compare_fn` score below threshold
+  still producing the existing `"score X below evidence_threshold Y"`
+  message unchanged; `check()` and `acheck()` both raising `TypeError`
+  immediately for a non-`str` `prompt` (an `int`, `None`, a `list`)
+  without ever calling `call_fn`; `check()` and `acheck()` both
+  raising `TypeError` immediately for a non-callable `call_fn` (a
+  plain string, an `int`) without entering the retry loop; and a
+  confirmation that a genuine `str` prompt and callable `call_fn` are
+  completely unaffected by the new checks, for both entry points.
+- Verified against the full existing suite (`test_acheck.py`,
+  `test_core.py`, `test_evidence.py`, `test_method.py`,
+  `test_parsed.py`, `test_validator.py`, and
+  `test_v045_regressions.py` through `test_v051_regressions.py`) with
+  zero modifications required to any existing test — all three fixes
+  are either a narrowing of previously-undefined behavior
+  (whitespace-answer normalization, boolean-detail wording) or a new
+  validation guard with no existing caller ever intentionally relying
+  on the old crash (non-str prompt / non-callable call_fn).
+
+[v0.5.2]: https://github.com/Vedantgitbot/booth/releases/tag/v0.5.2
 
 ## [v0.5.1] — check_with_evidence() reason / detail / checker_failed
 
@@ -723,6 +794,7 @@ inspection, and every fix has a dedicated regression test.
   threshold. `VERIFIED` / `REPAIRED` / `UNCERTAIN` statuses.
 
 [Unreleased]: https://github.com/Vedantgitbot/booth/compare/v0.5.1...HEAD
+[v0.5.2]: https://github.com/Vedantgitbot/booth/releases/tag/v0.5.2
 [v0.5.1]: https://github.com/Vedantgitbot/booth/releases/tag/v0.5.1
 [v0.5.0]: https://github.com/Vedantgitbot/booth/releases/tag/v0.5.0
 [v0.4.9]: https://github.com/Vedantgitbot/booth/releases/tag/v0.4.9

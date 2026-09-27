@@ -508,15 +508,32 @@ def _validate_args(threshold: float, max_retries: int) -> None:
         raise ValueError(f"max_retries must be >= 0, got {max_retries}")
 
 
+def _validate_call_args(prompt, call_fn) -> None:
+    """0.5.2: check()/acheck() previously had no defense against a
+    non-str `prompt` or a non-callable `call_fn` — check(fn, 123)
+    crashed several frames deep inside _build_prompt() with a bare
+    AttributeError ('int' object has no attribute 'rstrip'), and a
+    non-callable call_fn crashed with an unhelpful TypeError from the
+    `call_fn(current_prompt)` call site inside the retry loop, rather
+    than a clear error naming the actual mistake up front. Same
+    discipline already applied to max_retries (0.4.8) and
+    evidence_threshold (0.4.9), extended to the two remaining
+    unchecked entry-point arguments."""
+    if not isinstance(prompt, str):
+        raise TypeError(f"prompt must be a str, got {type(prompt).__name__}")
+    if not callable(call_fn):
+        raise TypeError(f"call_fn must be callable, got {type(call_fn).__name__}")
+
+
 def _validate_evidence_args(evidence_threshold: float) -> None:
     # 0.4.9 item 6: a string or None previously produced Python's
     # generic comparison TypeError deep inside `0.0 <= evidence_threshold`,
     # the same footgun max_retries had before 0.4.8 fixed it there.
     # bool is explicitly rejected too (unlike max_retries, where
     # True=1/False=0 retries is a harmless, arguably intentional
-    # reading) — a bool threshold silently meaning "require a perfect
-    # 1.0 score" or "accept anything" is far more likely to be a
-    # caller mistake than a deliberate choice.
+    # reading) — a bool threshold silently becoming "require a perfect
+    # 1.0" or "accept anything" is far more likely to be a caller
+    # mistake than a deliberate choice.
     if isinstance(evidence_threshold, bool) or not isinstance(evidence_threshold, (int, float)):
         raise TypeError(
             f"evidence_threshold must be a real number, got {type(evidence_threshold).__name__}"
@@ -561,8 +578,18 @@ def check_with_evidence(
     # EMPTY_ANSWER and NO_EVIDENCE — previously the same UNCERTAIN
     # branch — are distinguishable via `reason`.
     if not answer or not answer.strip():
+        # 0.5.2: previously `answer=answer or None`, which only
+        # normalizes a falsy (empty) string to None. A whitespace-only
+        # string like "   " is truthy in Python, so it passed through
+        # untouched into `.answer` even though this branch's own
+        # `detail` already says "empty or whitespace-only" — two
+        # inputs producing the identical status/reason/detail ended up
+        # with different `.answer` representations. This branch's
+        # entire premise is "there is no usable answer", so `.answer`
+        # is now unconditionally None here, for both the empty-string
+        # and whitespace-only cases.
         return BoothResult(
-            answer=answer or None, status=UNCERTAIN, confidence=None,
+            answer=None, status=UNCERTAIN, confidence=None,
             reason=EMPTY_ANSWER, detail="answer was empty or whitespace-only",
         )
     if _is_empty_evidence(evidence):
@@ -595,9 +622,18 @@ def check_with_evidence(
             "not support an async compare_fn."
         )
 
+    # 0.5.2: track *why* a BLOCKED result was produced separately from
+    # the boolean-vs-score branch that computed it. Previously the
+    # BLOCKED `detail` string always read "score X below
+    # evidence_threshold Y", even for a boolean `compare_fn` rejection
+    # — but §7.4 documents that evidence_threshold is not applied at
+    # all to boolean returns (it's a strict pass/fail). A caller
+    # reading that detail for a boolean-False rejection saw a
+    # threshold comparison described that never actually happened.
     if _is_boolish(raw_result):
         passed = bool(raw_result)
         score = 1.0 if passed else 0.0
+        block_detail = None if passed else "compare_fn returned False"
     else:
         try:
             score = float(raw_result)
@@ -614,6 +650,10 @@ def check_with_evidence(
                 detail=f"compare_fn returned {score}, outside the [0.0, 1.0] range",
             )
         passed = score >= evidence_threshold
+        block_detail = (
+            None if passed
+            else f"score {score} below evidence_threshold {evidence_threshold}"
+        )
 
     status = ACCEPTED if passed else BLOCKED
     return BoothResult(
@@ -622,7 +662,7 @@ def check_with_evidence(
         confidence=score,
         evidence_agreement=score,
         reason=None if passed else EVIDENCE_DISAGREES,
-        detail=None if passed else f"score {score} below evidence_threshold {evidence_threshold}",
+        detail=block_detail,
     )
 
 
@@ -651,6 +691,9 @@ def check(
     *,
     validator: Optional[ValidatorFn] = None,
 ) -> BoothResult:
+    # 0.5.2: prompt/call_fn type-checked up front, same discipline as
+    # threshold/max_retries below — see _validate_call_args.
+    _validate_call_args(prompt, call_fn)
     _validate_args(threshold, max_retries)
     # 0.4.8: check() previously had no defense against an async
     # call_fn — it would return a coroutine, which _parse_response()
@@ -718,6 +761,9 @@ async def acheck(
     *,
     validator: Optional[ValidatorFn] = None,
 ) -> BoothResult:
+    # 0.5.2: prompt/call_fn type-checked up front, same discipline as
+    # threshold/max_retries below — see _validate_call_args.
+    _validate_call_args(prompt, call_fn)
     if not _is_async_callable(call_fn):
         raise TypeError(
             "acheck() requires an async call_fn (async def ... -> str, "
