@@ -150,6 +150,13 @@ result = booth.check(
 
 The important requirement is that `check()` receives a synchronous callable.
 
+As of `v0.5.2`, a non-callable `call_fn` (a plain string, an `int`, etc.) raises `TypeError` immediately, rather than crashing deep inside the retry loop the first time BOOTH tries to invoke it:
+
+```python
+booth.check("not_callable", "What is the capital of France?")
+# TypeError: call_fn must be callable, got str
+```
+
 ---
 
 ## 3.2 `prompt`
@@ -164,6 +171,13 @@ result = booth.check(
 ```
 
 The prompt can be any application-specific LLM instruction.
+
+As of `v0.5.2`, a non-`str` `prompt` raises `TypeError` immediately, rather than crashing inside `_build_prompt()` with a generic `AttributeError` the first time BOOTH tries to append its confidence suffix to it:
+
+```python
+booth.check(call_llm, 123)
+# TypeError: prompt must be a str, got int
+```
 
 ---
 
@@ -562,7 +576,7 @@ async def ask(prompt: str):
     return "Unable to provide an acceptable answer."
 ```
 
-The behavior is otherwise the same as `check()`.
+The behavior is otherwise the same as `check()`, including the `v0.5.2` `prompt`/`call_fn` type validation described in §3.1/§3.2 — a non-`str` `prompt` or a non-callable `call_fn` passed to `acheck()` raises `TypeError` immediately, in the same way.
 
 ---
 
@@ -715,6 +729,17 @@ booth.check_with_evidence(answer=123, evidence=["e"], compare_fn=my_compare_fn)
 # TypeError: answer must be a str, got int
 ```
 
+As of `v0.5.2`, `.answer` on this result is `None` for both the empty-string and whitespace-only cases:
+
+```python
+result = booth.check_with_evidence(answer="   ", evidence=["e"], compare_fn=my_compare_fn)
+result.answer   # None
+result.reason   # booth.EMPTY_ANSWER
+result.detail   # "answer was empty or whitespace-only"
+```
+
+Previously, a whitespace-only string like `"   "` was left as the literal string in `.answer` instead of being normalized the way the empty-string case (`answer=""`) already was — two inputs producing the identical `status`/`reason`/`detail` triple ended up with different `.answer` values. Both cases now normalize to `None`, matching the `answer=None` case above.
+
 ---
 
 ## 7.2 `evidence`
@@ -824,6 +849,14 @@ Boolean results are treated as strict pass/fail results. This includes `numpy.bo
 
 `evidence_threshold` is not applied to boolean results.
 
+As of `v0.5.2`, a `False` result produces:
+
+```python
+result.detail == "compare_fn returned False"
+```
+
+Previously, this branch's `detail` always read `"score X below evidence_threshold Y"` — the same wording used by the numeric/score path in §7.5 below — even though no threshold comparison actually happens for a boolean `compare_fn`. That was misleading: `result.detail` is documented (§7.8) as "the thing to log or show a human," and the old wording implied a threshold decision that never occurred. The boolean path and the numeric path now produce distinct `detail` wording, matching which comparison actually ran.
+
 ---
 
 ## 7.5 Score comparison
@@ -865,6 +898,8 @@ BLOCKED
 result.reason == booth.EVIDENCE_DISAGREES
 result.detail  # e.g. "score 0.62 below evidence_threshold 0.8"
 ```
+
+This numeric-score `detail` wording is unchanged by `v0.5.2` — only the boolean path's wording changed (§7.4).
 
 A return value that can't be used as a score at all — non-numeric, or numeric but outside `[0.0, 1.0]` — is a different failure from a genuine disagreement, and gets its own reason:
 
@@ -936,7 +971,7 @@ Before `v0.5.1`, `check_with_evidence()` returned `UNCERTAIN` from a single cons
 | `INVALID_SCORE`        | `UNCERTAIN`  | `compare_fn` returned something unusable as a score               | `True`            |
 | `EVIDENCE_DISAGREES`   | `BLOCKED`    | a real comparison ran, and the answer scored below the threshold  | `False`           |
 
-`result.detail` is a free-text string with the specifics of that particular case — for example, which exception type and message caused a `COMPARE_FAILED`, or what the score and threshold were for `EVIDENCE_DISAGREES`. Treat `reason` as the thing to branch on programmatically, and `detail` as the thing to log or show a human — `detail`'s exact wording isn't part of the stable API.
+`result.detail` is a free-text string with the specifics of that particular case — for example, which exception type and message caused a `COMPARE_FAILED`, or what the score and threshold were for `EVIDENCE_DISAGREES` (or, as of `v0.5.2`, `"compare_fn returned False"` for a boolean `EVIDENCE_DISAGREES` — see §7.4). Treat `reason` as the thing to branch on programmatically, and `detail` as the thing to log or show a human — `detail`'s exact wording isn't part of the stable API.
 
 `checker_failed` is a computed property:
 
@@ -1037,6 +1072,8 @@ when no usable answer was obtained. This includes the case where the model retur
 A numeric or boolean `answer` (for example `{"answer": 42}`) is not rejected the same way. Since `v0.4.9`, these are coerced to their string form (`"42"`) for `result.answer`, the same treatment `confidence` already gets in the other direction — only `dict`/`list` values are schema violations.
 
 An empty or whitespace-only `answer` (for example `{"answer": ""}` or `{"answer": "   "}`) is also rejected as of `v0.4.9`, regardless of how high the reported confidence is — a blank answer at high confidence was previously accepted as `ACCEPTED`. The one exception is an `AMBIGUOUS` attempt: the model may legitimately leave `answer` blank while relying on `interpretations` to carry the real content, so this guard does not apply when `ambiguous` is `true`.
+
+This is the `check()`/`acheck()` parsing path. The equivalent normalization for `check_with_evidence()`'s `answer` argument is described in §7.1.
 
 ---
 
@@ -2076,6 +2113,19 @@ booth.DEFAULT_MAX_RETRIES
 | `EVIDENCE_DISAGREES`    | `BLOCKED`   | `False`            |
 
 See §7.8 for the full breakdown.
+
+## Entry-point argument validation (v0.5.2)
+
+Every argument to `check()`, `acheck()`, and `check_with_evidence()` now raises a clear, specific error at the call site rather than crashing deep inside BOOTH's internals:
+
+| Argument             | Functions                          | Invalid raises                                      |
+| -------------------- | ----------------------------------- | ----------------------------------------------------- |
+| `prompt`              | `check()`, `acheck()`               | `TypeError` if not `str` (v0.5.2)                     |
+| `call_fn`             | `check()`, `acheck()`               | `TypeError` if not callable (v0.5.2)                  |
+| `threshold`           | `check()`, `acheck()`               | `ValueError` if outside `[0.0, 1.0]`                  |
+| `max_retries`         | `check()`, `acheck()`               | `TypeError` if not `int`; `ValueError` if negative    |
+| `answer`              | `check_with_evidence()`             | `TypeError` if not `str`/`None` (v0.4.9)              |
+| `evidence_threshold`  | `check_with_evidence()`             | `TypeError` if not a real number; `ValueError` if outside `[0.0, 1.0]` |
 
 ## Important result properties
 
