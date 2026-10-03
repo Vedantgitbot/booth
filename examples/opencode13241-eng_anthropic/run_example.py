@@ -144,21 +144,17 @@ def check_answer(answer: str, evidence: list[str]) -> bool:
 
 
 def main():
-    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not os.getenv("ANTHROPIC_API_KEY"):
+        raise RuntimeError(
+            "ANTHROPIC_API_KEY not found in environment or .env file. "
+            "Please set ANTHROPIC_API_KEY before running this example."
+        )
+
     print("=" * 70)
     print("ANTHROPIC (CLAUDE 3.5 HAIKU) + BOOTH RAG DEMO")
     print("=" * 70)
 
-    if not api_key:
-        print("Note: ANTHROPIC_API_KEY not detected. Using recorded Claude 3.5 Haiku responses.\n")
-        recorded_answers = [
-            "Yes, a customer can get a refund for a Standard plan purchased 10 days ago, as it is within the 30-day window.",
-            "No, Enterprise plans are non-refundable after activation, regardless of how long the plan has been active.",
-            "No refund is due. Enterprise plans are non-refundable once activated.",
-        ]
-        answers = recorded_answers
-    else:
-        answers = [ask_anthropic(q) for q in QUESTIONS]
+    answers = [ask_anthropic(q) for q in QUESTIONS]
 
     for number, (question, answer) in enumerate(zip(QUESTIONS, answers), 1):
         result = booth.check_with_evidence(

@@ -39,5 +39,17 @@ status=BLOCKED
 ### 3. Anthropic Integration
 Claude 3.5 Haiku provides concise, structured answers that align naturally with `check_with_evidence()`, allowing fast and deterministic validation without added complexity.
 
+## Evaluation Heuristic & Limitations
+
+### Comparison Logic (`compare_fn`)
+The evaluation function `check_answer()` verifies whether the generated response strictly follows the policy evidence provided:
+1. **Refundable Scenarios (e.g. Q1 Standard within 30 days):** Evaluates if the response correctly confirms eligibility using approved phrases (`"within 30 days"`, `"eligible for a refund"`, `"can get a refund"`).
+2. **Non-Refundable Scenarios (e.g. Q2/Q3 Enterprise plans):** Evaluates if the response correctly declares non-refundability using explicit denial phrases (`"no refund"`, `"non-refundable"`, `"not eligible"`).
+3. **Hallucination Blocking:** When an answer falsely claims that an Enterprise customer receives a prorated refund, it contradicts policy statement #2 (`Enterprise plans are non-refundable after activation...`) and is blocked (`status=BLOCKED`, `ok=False`).
+
+### Limitations
+- **Lexical/Phrase-Based Matching:** The heuristic matches key phrase patterns against normalized text rather than running a secondary LLM judge.
+- **Single-Turn Scope:** The example is scoped to single-turn policy QA; multi-turn negotiation or complex credit adjustments would require contextual state tracking.
+
 ## Summary
 The integration confirms that `check_with_evidence()` works effectively with Anthropic's Claude 3.5 Haiku as an evidence-grounded verification layer.
