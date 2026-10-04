@@ -20,15 +20,84 @@ This document records the empirical results and observations of running **BOOTH 
 
 ---
 
-## Execution Summary & Benchmark Metrics
+## Execution Summary & Metrics
 
 | Metric | Result |
 |---|---|
-| **Total Test Runs** | 10 evaluation queries across 3 execution suites |
-| **Successful Verifications** | 10 / 10 (100%) |
-| **Average Latency per Query** | ~1.2s – 2.8s (Local CPU/GPU inference) |
+| **Total Test Runs** | 5 evaluation test cases (2 sync `check()`, 1 async `acheck()`, 2 RAG `check_with_evidence()`) |
+| **Successful Verifications** | 5 / 5 (100% expected behavior) |
 | **JSON Format Compliance** | 100% (No malformed output parse errors) |
-| **Confidence Calibration** | Factual queries returned confidence `0.90` – `0.95` |
+| **Confidence Calibration** | Factual queries returned confidence `0.90` |
+
+---
+
+## Actual Console Output
+
+```text
+======================================================================
+BOOTH + Ollama (llama3.2:latest) Integration Example
+======================================================================
+BOOTH Version : 0.5.2
+Ollama Server : http://localhost:11434
+Ollama Model  : llama3.2:latest
+
+======================================================================
+DEMO 1: Synchronous Checkpoint (booth.check)
+======================================================================
+
+Prompt: What is the capital of France?
+--------------------------------------------------
+Status       : ACCEPTED
+Passed (ok)  : True
+Answer       : Paris
+Confidence   : 0.9
+Method       : confidence
+Attempts     : 1
+
+Prompt: What is the capital of New York State?
+--------------------------------------------------
+Status       : ACCEPTED
+Passed (ok)  : True
+Answer       : Albany
+Confidence   : 0.9
+Method       : confidence
+Attempts     : 1
+
+======================================================================
+DEMO 2: Asynchronous Checkpoint (booth.acheck)
+======================================================================
+
+Async Prompt: What is 15 multiplied by 12?
+--------------------------------------------------
+Status       : ACCEPTED
+Passed (ok)  : True
+Answer       : 180
+Confidence   : 0.9
+Method       : confidence
+
+======================================================================
+DEMO 3: Evidence Grounding (booth.check_with_evidence)
+======================================================================
+
+Policy Context:
+ - Standard subscription plans are eligible for a full refund within 30 days of purchase.
+ - After 30 days, Standard plans are non-refundable.
+ - Enterprise plans are strictly non-refundable once activated.
+
+Test 1 (Accurate Answer): 'Standard plans can be refunded within 30 days of purchase.'
+Status       : ACCEPTED
+Passed (ok)  : True
+
+Test 2 (Hallucinated Answer): 'Enterprise plans can be fully refunded anytime within 90 days.'
+Status       : BLOCKED
+Passed (ok)  : False
+Reason       : EVIDENCE_DISAGREES
+Detail       : compare_fn returned False
+
+======================================================================
+All Ollama + BOOTH integration demos completed successfully!
+======================================================================
+```
 
 ---
 
@@ -45,15 +114,6 @@ This document records the empirical results and observations of running **BOOTH 
 
 4. **Evidence Grounding (`booth.check_with_evidence`)**:
    - Hallucinated answers (e.g. claims contradicting refund eligibility windows) were correctly caught and flagged with status `BLOCKED` and reason `EVIDENCE_DISAGREES`.
-
----
-
-## Edge Cases & Potential Quirks
-
-- **Formatting / Whitespace Variations**:
-  - Small local models can occasionally include leading or trailing commentary around JSON objects when temperature > 0. Setting `temperature: 0.0` in Ollama request options ensured clean single-line JSON generation that matches BOOTH's regex extraction.
-- **Inference Speed**:
-  - Local CPU-only execution latency scales with context size and batch length. For real-time sync endpoints, ensuring Ollama has GPU acceleration enabled (CUDA/Metal) improves response latency.
 
 ---
 
