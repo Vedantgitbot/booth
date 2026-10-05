@@ -525,6 +525,26 @@ def _validate_call_args(prompt, call_fn) -> None:
         raise TypeError(f"call_fn must be callable, got {type(call_fn).__name__}")
 
 
+def _validate_on_attempt_callable(on_attempt) -> None:
+    """0.5.3: on_attempt previously had no defense against a
+    non-callable value at all. check()'s only prior guard checked for
+    *async*-ness (_is_async_callable()), which returns False for any
+    non-callable too — so a non-callable on_attempt silently passed
+    that check, then crashed with a bare, unhelpful TypeError at the
+    `on_attempt(i, attempt)` call site deep inside the retry loop,
+    *after* call_fn had already run and consumed a real attempt.
+    acheck() had no on_attempt validation of any kind before this and
+    crashed the same way, from its own call site. Same discipline as
+    _validate_call_args() (0.5.2): check callable() first, up front,
+    before anything in the loop runs, so the failure is immediate and
+    doesn't waste an LLM call. Async-ness (where relevant) is still
+    checked separately by the caller after this, since a sync-only
+    caller (check()) and a sync-or-async caller (acheck()) handle that
+    distinction differently."""
+    if on_attempt is not None and not callable(on_attempt):
+        raise TypeError(f"on_attempt must be callable, got {type(on_attempt).__name__}")
+
+
 def _validate_evidence_args(evidence_threshold: float) -> None:
     # 0.4.9 item 6: a string or None previously produced Python's
     # generic comparison TypeError deep inside `0.0 <= evidence_threshold`,
@@ -707,6 +727,13 @@ def check(
             "an async call_fn (async def ... -> str, or an object "
             "with an async def __call__)."
         )
+    # 0.5.3: non-callable on_attempt is now rejected up front, before
+    # anything else about on_attempt is inspected. See
+    # _validate_on_attempt_callable's docstring for the bug this
+    # closes. The async-specific error below is still checked
+    # separately afterward — this call only guarantees on_attempt is
+    # *callable*, not that it's the right kind of callable for check().
+    _validate_on_attempt_callable(on_attempt)
     if on_attempt is not None and _is_async_callable(on_attempt):
         raise TypeError(
             "check() cannot await an async on_attempt callback. "
@@ -771,6 +798,15 @@ async def acheck(
             "a synchronous call_fn."
         )
     _validate_args(threshold, max_retries)
+    # 0.5.3: acheck() previously had NO on_attempt validation of any
+    # kind before the retry loop — a non-callable on_attempt went
+    # straight into the `else: on_attempt(i, attempt)` branch inside
+    # the loop and crashed uncaught, after call_fn had already run.
+    # acheck() accepts both sync and async on_attempt (dispatched at
+    # call time below via _is_async_callable), so only the callable()
+    # check applies here — there's no separate "wrong kind of async"
+    # error to raise the way check() has.
+    _validate_on_attempt_callable(on_attempt)
 
     attempts: List[Attempt] = []
     current_prompt = _build_prompt(prompt)
