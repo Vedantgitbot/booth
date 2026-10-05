@@ -8,6 +8,23 @@ surface bump the patch version.
 ## [Unreleased]
 
 Nothing yet.
+## v0.5.3 - on_attempt now validated as callable in check() and acheck() (from feedback and bugs found through contributors)
+
+- Fix: `on_attempt` is now validated as callable before the retry loop
+  starts, in both `check()` and `acheck()`. Previously a non-callable
+  `on_attempt` wasn't caught by either function — `check()`'s only
+  guard checked for *async*-ness, which doesn't catch a plain
+  non-callable, and `acheck()` had no guard at all. Both crashed with
+  a bare `TypeError` from inside the retry loop, after `call_fn` had
+  already run and consumed a real LLM call. Same validation discipline
+  already applied to `prompt`/`call_fn` in 0.5.2.
+- Audited `validator` (check()/acheck()) and `compare_fn`
+  (check_with_evidence()) for the same class of bug. Both are already
+  safe: `_run_validator()` and the `compare_fn` call site each wrap
+  the call in `try/except Exception`, so a non-callable value there
+  degrades to a clear rejection rather than crashing. No code change
+  needed for these two.
+
 ## [v0.5.2] — check_with_evidence() whitespace-answer / boolean-detail fixes; prompt/call_fn type validation
 
 Three fixes, shipped together. The first two are contained inside
@@ -794,6 +811,7 @@ inspection, and every fix has a dedicated regression test.
   threshold. `VERIFIED` / `REPAIRED` / `UNCERTAIN` statuses.
 
 [Unreleased]: https://github.com/Vedantgitbot/booth/compare/v0.5.1...HEAD
+[v0.5.3]: https://github.com/Vedantgitbot/booth/releases/tag/v0.5.3
 [v0.5.2]: https://github.com/Vedantgitbot/booth/releases/tag/v0.5.2
 [v0.5.1]: https://github.com/Vedantgitbot/booth/releases/tag/v0.5.1
 [v0.5.0]: https://github.com/Vedantgitbot/booth/releases/tag/v0.5.0

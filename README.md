@@ -148,60 +148,22 @@ print(result.attempts)        # List of Attempt objects detailing each retry
 
 ## 🔌 Provider Integrations
 
-BOOTH is **zero-dependency** and **provider-agnostic**. Because your application supplies the model-calling function, it works with any LLM client or provider:
+BOOTH is **zero-dependency** and **provider-agnostic**. Because your application supplies the model-calling function, it works with any LLM client or provider — rather than take our word for it, see it run for real:
 
-### OpenAI
+**[→ browse real, runnable integration examples](https://github.com/Vedantgitbot/booth/tree/main/examples)**
 
-```python
-from openai import OpenAI
-import booth
+Each folder is a complete, independently reproducible example contributed against a different provider or model, with the actual console output and findings included — not just code snippets. Currently includes:
 
-client = OpenAI()
+| Provider / Model | Function(s) used | What it shows |
+|---|---|---|
+| **Groq** (`llama-3.3-70b-versatile`) | `check_with_evidence()` | Evidence-grounded refund policy QA, hallucination blocking |
+| **Google Gemini** (`gemini-3.5-flash-lite`) | `check()`, `check_with_evidence()` | Ambiguity detection, evidence grounding, and a real BOOTH error-swallowing bug found along the way |
+| **Anthropic** (`claude-3-5-haiku-20241022`) | `check_with_evidence()` | Evidence-grounded refund policy QA against Claude |
+| **Ollama / local models** (`qwen2.5-coder:7b`, `llama3.2:latest`) | `check()`, `acheck()`, `check_with_evidence()` | `check()` run against a local model with no evidence grounding — confidence self-reporting behavior shown plainly, good and bad |
 
-def call_openai(prompt: str) -> str:
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}]
-    )
-    return response.choices[0].message.content
+Each example's own `RESULTS.md` documents what actually happened on a real run: what worked, what didn't, and any surprises along the way — including negative results. That's intentional; a confidently-wrong result from `check()` alone on a weaker model is as useful a data point as a clean pass.
 
-result = booth.check(call_openai, "What is the capital of Japan?")
-```
-
-### Anthropic
-
-```python
-import anthropic
-import booth
-
-client = anthropic.Anthropic()
-
-def call_anthropic(prompt: str) -> str:
-    message = client.messages.create(
-        model="claude-3-5-sonnet-20241022",
-        max_tokens=1024,
-        messages=[{"role": "user", "content": prompt}]
-    )
-    return message.content[0].text
-
-result = booth.check(call_anthropic, "Summarize user feedback")
-```
-
-### Ollama / Local Models
-
-```python
-import requests
-import booth
-
-def call_ollama(prompt: str) -> str:
-    res = requests.post(
-        "http://localhost:11434/api/generate",
-        json={"model": "llama3", "prompt": prompt, "stream": False}
-    )
-    return res.json()["response"]
-
-result = booth.check(call_ollama, "Explain quantum entanglement in one sentence.")
-```
+Want to add your own? See the [open call for provider examples](https://github.com/Vedantgitbot/booth/issues/2) — any provider, any model, PRs welcome.
 
 ---
 
@@ -225,6 +187,7 @@ result = booth.check(call_ollama, "Explain quantum entanglement in one sentence.
 * **[TUTORIAL.md](TUTORIAL.md)** — Complete reference for every function, type, property, and method in BOOTH's API.
 * **[USECASES.md](USECASES.md)** — Detailed guide on where BOOTH fits in your architecture and where it doesn't.
 * **[CHANGELOG.md](CHANGELOG.md)** — Release notes and history of features, bug fixes, and API evolution.
+* **[examples/](https://github.com/Vedantgitbot/booth/tree/main/examples)** — Real, runnable integration examples across providers and models, with documented results.
 
 ---
 
@@ -240,4 +203,4 @@ See **[CONTRIBUTING.md](CONTRIBUTING.md)** for how to report a bug well, what a 
 
 This is the official BOOTH repository, maintained by Vedant Brahmbhatt.
 
-BOOTH is released under the MIT License. See [`LICENSE`](LICENSE) for the full text.
+BOOTH is released under the MIT License. See [`LICENSE`](LICENSE) for the full text.
