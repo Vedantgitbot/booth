@@ -464,7 +464,7 @@ def _evaluate(
     if attempt.parse_ok and not attempt.passed_validation:
         return None
 
-    if attempt.parse_ok and attempt.confidence >= threshold:
+    if attempt.parse_ok and attempt.confidence is not None and attempt.confidence >= threshold:
         status = ACCEPTED if attempt_index == 0 else REPAIRED
         return BoothResult(
             answer=attempt.answer,
