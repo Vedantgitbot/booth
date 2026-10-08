@@ -35,5 +35,8 @@ Repository = "https://github.com/Vedantgitbot/booth"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+booth = ["py.typed"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
