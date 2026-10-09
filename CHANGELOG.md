@@ -58,13 +58,8 @@ contributor while running the Gemini example.
   after a failed call while still being the parse-failure, reconsider and
   validation prompts in the cases that should keep them.
 
-[v0.5.4]: https://github.com/Vedantgitbot/booth/releases/tag/v0.5.4
-
 ## [v0.5.3] — on_attempt callable validation; py.typed (PEP 561); SPDX license metadata
 
-- **Fix: `on_attempt` is now validated as callable before the retry loop
-  starts**, in both `check()` and `acheck()`. (unchanged explanation from
-  your current entry)
 - **Added `py.typed` marker (PEP 561)** and `package-data` config so the
   type hints ship in the wheel and are visible to mypy/pyright/Pylance.
   Contributed by @AK-Lmn (#16). Also adds an `attempt.confidence is not

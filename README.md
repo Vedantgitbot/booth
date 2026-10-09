@@ -116,11 +116,12 @@ BOOTH provides three primary APIs tailored to your application's workflow:
 | Status Code | Type | Description |
 |---|---|---|
 | `ACCEPTED` | Success | Answer passed all checks (unambiguous, confidence threshold met, validator passed). |
-| `REPAIRED` | Success | Initially failed or was ambiguous, but passed after a reconsideration retry. |
-| `AMBIGUOUS` | Reject | The response contains unresolved ambiguity or multiple conflicting readings. |
-| `UNCERTAIN` | Reject | Model confidence fell below the configured threshold (`default=0.7`). |
+| `REPAIRED` | Success | An earlier attempt failed (low confidence, unparseable response, or failed validator), but a retry passed. |
+| `AMBIGUOUS` | Reject | The model reported multiple reasonable readings of the question. Returned immediately, never retried. |
+| `UNCERTAIN` | Reject | No acceptable result: confidence never reached the threshold (`default=0.7`), the response couldn't be parsed, the validator never passed, or `call_fn` itself failed. Check `result.method` and `result.call_failed` for which. |
 | `BLOCKED` | Reject | Evidence check failed — the answer disagrees with provided evidence documents. |
-| `INVALID_FORMAT` | Reject | Model response could not be parsed into the expected checkpoint structure. |
+
+There is no separate status for a response that can't be parsed: that is `UNCERTAIN` with `result.method == "parse_failure"`.
 
 ### Result Inspection
 
@@ -141,6 +142,7 @@ except booth.BoothRejected as e:
 print(result.status)          # Status string (e.g. ACCEPTED, UNCERTAIN, AMBIGUOUS)
 print(result.confidence)      # Confidence score float (0.0 to 1.0)
 print(result.method)          # Check failure category ('ambiguity', 'confidence', 'validation', 'parse_failure')
+print(result.call_failed)     # True if call_fn itself failed (bad key, retired model, network error)
 print(result.attempts)        # List of Attempt objects detailing each retry
 ```
 
@@ -157,7 +159,7 @@ Each folder is a complete, independently reproducible example contributed agains
 | Provider / Model | Function(s) used | What it shows |
 |---|---|---|
 | **Groq** (`llama-3.3-70b-versatile`) | `check_with_evidence()` | Evidence-grounded refund policy QA, hallucination blocking |
-| **Google Gemini** (`gemini-3.5-flash-lite`) | `check()`, `check_with_evidence()` | Ambiguity detection, evidence grounding, and a real BOOTH error-swallowing bug found along the way |
+| **Google Gemini** (`gemini-3.5-flash-lite`) | `check()`, `check_with_evidence()` | Ambiguity detection, evidence grounding, and a real BOOTH gap found along the way: failed API calls looked like an unsure model (now separable with `result.call_failed`) |
 | **Anthropic** (`claude-3-5-haiku-20241022`) | `check_with_evidence()` | Evidence-grounded refund policy QA against Claude |
 | **Ollama / local models** (`qwen2.5-coder:7b`, `llama3.2:latest`) | `check()`, `acheck()`, `check_with_evidence()` | `check()` run against a local model with no evidence grounding — confidence self-reporting behavior shown plainly, good and bad |
 

@@ -6,7 +6,7 @@ BOOTH is a lightweight checkpoint layer for LLM outputs. It takes an LLM call, e
 
 This tutorial focuses on **how BOOTH works and how to use its API**.
 
-Guidance about when BOOTH is appropriate, when it is unnecessary, and its broader limitations belongs in `use-cases.md`.
+Guidance about when BOOTH is appropriate, when it is unnecessary, and its broader limitations belongs in `USECASES.md`.
 
 ---
 
@@ -157,6 +157,8 @@ booth.check("not_callable", "What is the capital of France?")
 # TypeError: call_fn must be callable, got str
 ```
 
+If `call_fn` itself raises while BOOTH is running (a bad API key, a retired model name, a network error), BOOTH doesn't propagate it. It records the error on the attempt, retries if retries remain, and returns a normal `UNCERTAIN` result. Use `result.call_failed` (§17.1) to tell that apart from a model that simply answered badly.
+
 ---
 
 ## 3.2 `prompt`
@@ -250,7 +252,12 @@ Parse failure
 
 Validator failure
     → show the validation failure and ask for a correction
+
+Call failure (call_fn raised or returned a non-string)
+    → ask again with the original prompt
 ```
+
+As of `v0.5.4`, a failed call is retried with the original prompt, exactly as in the first attempt. Before that it got the "could not be parsed" prompt, even though there was no response to comment on.
 
 Ambiguity is different: an ambiguous attempt is returned immediately rather than automatically retried.
 
@@ -287,6 +294,15 @@ attempt
 For `check()`, `on_attempt` must be synchronous.
 
 Passing an asynchronous callback to `check()` raises `TypeError`. This applies to a plain `async def` function and to an object whose `__call__` is itself `async def`.
+
+As of `v0.5.3`, a non-callable `on_attempt` (a string, an `int`, etc.) raises `TypeError` immediately in both `check()` and `acheck()`, before any LLM call is made:
+
+```python
+booth.check(call_llm, "What is the capital of France?", on_attempt="not_callable")
+# TypeError: on_attempt must be callable, got str
+```
+
+Before that, it crashed from inside the retry loop, after `call_fn` had already run once.
 
 ---
 
@@ -576,7 +592,7 @@ async def ask(prompt: str):
     return "Unable to provide an acceptable answer."
 ```
 
-The behavior is otherwise the same as `check()`, including the `v0.5.2` `prompt`/`call_fn` type validation described in §3.1/§3.2 — a non-`str` `prompt` or a non-callable `call_fn` passed to `acheck()` raises `TypeError` immediately, in the same way.
+The behavior is otherwise the same as `check()`, including the `v0.5.2` `prompt`/`call_fn` type validation described in §3.1/§3.2 — a non-`str` `prompt` or a non-callable `call_fn` passed to `acheck()` raises `TypeError` immediately, in the same way. A non-callable `on_attempt` (§3.5, `v0.5.3`) is rejected the same way.
 
 ---
 
@@ -1044,6 +1060,7 @@ result.ok
 result.ambiguous
 result.interpretations
 result.all_parse_failed
+result.call_failed
 result.method
 result.parsed
 result.reason
@@ -1266,6 +1283,7 @@ attempt.chosen_interpretation
 attempt.passed_validation
 attempt.validation_error
 attempt.parsed
+attempt.call_failed
 ```
 
 `check_with_evidence()` results always have `attempts == []` — that path never populates `Attempt` objects at all, which is exactly why `result.reason`/`result.detail` (§7.8) exist: they're the equivalent diagnostic surface for a path that has no attempt history to inspect.
@@ -1342,6 +1360,21 @@ print(attempt.error)
 ```
 
 As of `v0.4.9`, a parse failure always carries a specific, human-readable reason here (for example `"'confidence' 17.0 is out of the [0.0, 1.0] range"` or `"'answer' was empty or whitespace-only"`) instead of leaving `error` as `None`. `call_fn` exceptions and non-string `call_fn` returns already populated this field in earlier versions; this extends the same discipline to every parse-rejection path inside `_parse_response()`.
+
+---
+
+## `Attempt.call_failed`
+
+Added in `v0.5.4`. `True` when `call_fn` raised an exception, or returned something other than a `str`, so there was no response to parse.
+
+```python
+if attempt.call_failed:
+    print("The call itself failed:", attempt.error)
+```
+
+A garbage response is not a call failure: `parse_ok` is `False` but `call_failed` is also `False`. When `call_failed` is `True`, `parse_ok` is always `False` too, since there was nothing to parse.
+
+For the result-level version of this flag, see §17.1.
 
 ---
 
@@ -1510,6 +1543,32 @@ This property is specific to `check()`/`acheck()` results — a `check_with_evid
 
 ---
 
+## 17.1 `BoothResult.call_failed`
+
+`call_failed` is a computed property added in `v0.5.4`. It is `True` when every attempt failed because `call_fn` itself failed: it raised an exception (a bad API key, a retired model name, a network error), or returned something other than a `str`.
+
+```python
+result = booth.check(call_llm, "What is the capital of France?")
+
+if result.call_failed:
+    alert_engineering(result.attempts[-1].error)
+elif result.status == booth.UNCERTAIN:
+    print("The model answered, but not acceptably:", result.method)
+```
+
+Before `v0.5.4`, a failed call looked exactly like a model that returned garbage: `UNCERTAIN`, `method == "parse_failure"`, `all_parse_failed == True`. Those values are unchanged, so existing code keeps working, but `call_failed` now separates the two cases. The error text is on `result.attempts[-1].error`, and `attempt.call_failed` (§13) says which individual attempts failed.
+
+Like `all_parse_failed`, it looks at the whole history:
+
+* If a call fails once and a retry succeeds, the result is `REPAIRED` and `result.call_failed` is `False`. The first attempt still has `call_failed == True`.
+* If a model answers with low confidence and the retry call then fails, `result.call_failed` is `False`. Check the last attempt's `call_failed` in that case.
+
+BOOTH can't tell a temporary failure from a permanent one without knowing each provider's error types, so a 401 is retried like any other failure. If you expect configuration errors, check `result.call_failed` and stop, or pass `max_retries=0`.
+
+Always `False` on `check_with_evidence()` results, which have no attempts.
+
+---
+
 # 18. `BoothResult.method`
 
 `method` explains which BOOTH mechanism determined the result.
@@ -1544,7 +1603,7 @@ The meanings are:
 | --------------- | --------------------------------------------------------- |
 | `ambiguity`     | The result was blocked by ambiguity                       |
 | `evidence`      | The result came from `check_with_evidence()`              |
-| `parse_failure` | Every attempt failed to parse                             |
+| `parse_failure` | Every attempt failed to parse (this includes failed `call_fn` calls, see §17.1) |
 | `validation`    | The final determining failure was validation              |
 | `confidence`    | The final determining failure was insufficient confidence |
 
@@ -1697,6 +1756,7 @@ It includes the normal result fields as well as computed properties such as:
 ```python
 payload["ok"]
 payload["method"]
+payload["call_failed"]
 payload["checker_failed"]
 ```
 
@@ -1727,6 +1787,8 @@ json.dumps(payload)
 ```
 
 As of `v0.5.1`, `payload` also always contains `"reason"` and `"detail"` — `None` for `check()`/`acheck()` results, populated for `check_with_evidence()` results (§7.8).
+
+As of `v0.5.4`, `payload` also contains `"call_failed"`, and each entry in `payload["attempts"]` includes `call_failed` (§17.1).
 
 `to_dict()` is useful for:
 
@@ -1985,6 +2047,7 @@ for index, attempt in enumerate(result.attempts):
     print("Answer:", attempt.answer)
     print("Confidence:", attempt.confidence)
     print("Parsed:", attempt.parse_ok)
+    print("Call failed:", attempt.call_failed)
     print("Ambiguous:", attempt.ambiguous)
     print("Validation:", attempt.passed_validation)
     print()
@@ -2116,7 +2179,7 @@ See §7.8 for the full breakdown.
 
 ## Entry-point argument validation (v0.5.2)
 
-Every argument to `check()`, `acheck()`, and `check_with_evidence()` now raises a clear, specific error at the call site rather than crashing deep inside BOOTH's internals:
+These arguments raise a clear, specific error at the call site rather than crashing deep inside BOOTH's internals:
 
 | Argument             | Functions                          | Invalid raises                                      |
 | -------------------- | ----------------------------------- | ----------------------------------------------------- |
@@ -2124,6 +2187,7 @@ Every argument to `check()`, `acheck()`, and `check_with_evidence()` now raises 
 | `call_fn`             | `check()`, `acheck()`               | `TypeError` if not callable (v0.5.2)                  |
 | `threshold`           | `check()`, `acheck()`               | `ValueError` if outside `[0.0, 1.0]`                  |
 | `max_retries`         | `check()`, `acheck()`               | `TypeError` if not `int`; `ValueError` if negative    |
+| `on_attempt`          | `check()`, `acheck()`               | `TypeError` if not callable (v0.5.3); `check()` also rejects an async one |
 | `answer`              | `check_with_evidence()`             | `TypeError` if not `str`/`None` (v0.4.9)              |
 | `evidence_threshold`  | `check_with_evidence()`             | `TypeError` if not a real number; `ValueError` if outside `[0.0, 1.0]` |
 
@@ -2140,6 +2204,7 @@ result.ok
 result.ambiguous
 result.interpretations
 result.all_parse_failed
+result.call_failed
 result.method
 result.parsed
 result.reason
