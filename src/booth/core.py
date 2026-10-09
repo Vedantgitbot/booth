@@ -13,13 +13,7 @@ AMBIGUOUS = "AMBIGUOUS"
 BLOCKED = "BLOCKED"
 UNCERTAIN = "UNCERTAIN"
 
-# 0.5.1: fixed reason codes for check_with_evidence()'s UNCERTAIN/BLOCKED
-# results. Previously a caller got the same UNCERTAIN status for four
-# unrelated causes (blank answer, no evidence, a crashing comparator, a
-# malformed score) with no way to tell them apart short of re-reading
-# check_with_evidence()'s internals. These five codes are the full set —
-# check()/acheck() never set reason, so their results always carry
-# reason=None.
+# Set by check_with_evidence() only. check()/acheck() results carry reason=None.
 EMPTY_ANSWER = "EMPTY_ANSWER"
 NO_EVIDENCE = "NO_EVIDENCE"
 EVIDENCE_DISAGREES = "EVIDENCE_DISAGREES"
@@ -51,12 +45,11 @@ nothing else."""
 
 _JSON_RE = re.compile(r"\{[^{}]*\}")
 
-_MISSING = object()  # distinguishes "key absent" from "key present but invalid"
+_MISSING = object()  # tells "key absent" apart from "key present but invalid"
 
 
 def _coerce_ambiguous(raw) -> Optional[bool]:
-    """Real bool passes through. "true"/"false" strings (any case) are
-    accepted. Anything else returns None (reject, don't guess)."""
+    """Accept a real bool or "true"/"false" (any case). Anything else is None."""
     if isinstance(raw, bool):
         return raw
     if isinstance(raw, str):
@@ -69,10 +62,7 @@ def _coerce_ambiguous(raw) -> Optional[bool]:
 
 
 def _is_async_callable(fn) -> bool:
-    """True for async def, functools.partial of one, or an object with
-    async def __call__. A sync __call__ that returns an awaitable at
-    runtime is intentionally not detected — no signature-level way to
-    tell without calling it."""
+    """async def, a partial of one, or an object with async def __call__."""
     return (
         inspect.iscoroutinefunction(fn)
         or inspect.iscoroutinefunction(getattr(fn, "__call__", None))
@@ -92,21 +82,16 @@ class Attempt:
     passed_validation: bool = True
     validation_error: Optional[str] = None
     parsed: Optional[dict] = None
+    # True when call_fn raised or returned a non-str, so there was no response to parse.
+    call_failed: bool = False
 
 
 class BoothRejected(Exception):
-    """0.5.0: raised by BoothResult.unwrap() when the result is not ok
-    (status is AMBIGUOUS, UNCERTAIN, or BLOCKED). Carries the full
-    original BoothResult as `.result`, so a caller handling this
-    exception can still inspect `.status`, `.method`, `.attempts`, and
-    everything else — unwrap() trades away the answer, not the
-    diagnostics.
+    """Raised by BoothResult.unwrap() on a non-ok result.
 
-    Deliberately excludes the raw answer/evidence text from the
-    exception's own string message: exception messages routinely end
-    up in logs, and a rejected answer is exactly the kind of content
-    that shouldn't be logged by default just because someone called
-    unwrap(). Inspect `.result.answer` explicitly if you need it."""
+    The full result is on `.result`. The message leaves out the rejected
+    answer text on purpose, since exception messages tend to end up in logs.
+    """
 
     def __init__(self, result: "BoothResult"):
         self.result = result
@@ -128,9 +113,6 @@ class BoothResult:
     interpretations: List[str] = field(default_factory=list)
     evidence_agreement: Optional[float] = None
     parsed: Optional[dict] = None
-    # 0.5.1: populated only by check_with_evidence(). check()/acheck()
-    # results always carry reason=None, detail=None, checker_failed=False
-    # via these defaults — no code changes needed in those paths.
     reason: Optional[str] = None
     detail: Optional[str] = None
 
@@ -147,13 +129,18 @@ class BoothResult:
         return bool(self.attempts) and all(not a.parse_ok for a in self.attempts)
 
     @property
+    def call_failed(self) -> bool:
+        """True if every attempt failed because call_fn itself failed.
+
+        Derived from the attempts, same idea as all_parse_failed. A call error
+        and a garbage response both still report method == "parse_failure";
+        use this (or attempt.call_failed) to tell them apart.
+        """
+        return bool(self.attempts) and all(a.call_failed for a in self.attempts)
+
+    @property
     def checker_failed(self) -> bool:
-        """0.5.1: True iff `reason` is one of the two "checker fault"
-        codes (the comparator crashed, or returned something unusable
-        as a score) rather than a real verdict about the answer itself
-        (EMPTY_ANSWER, NO_EVIDENCE — caller's inputs were incomplete;
-        EVIDENCE_DISAGREES — a genuine, meaningful verdict). Derived
-        from `reason`, not separate state, so it can't drift from it."""
+        """True when compare_fn crashed or returned an unusable score."""
         return self.reason in (COMPARE_FAILED, INVALID_SCORE)
 
     @property
@@ -169,34 +156,23 @@ class BoothResult:
         return "confidence"
 
     def unwrap(self) -> str:
-        """0.5.0: returns `.answer` as a plain `str` if this result is
-        ok (ACCEPTED or REPAIRED) — uses exactly the same predicate as
-        `.ok`, so the two can never disagree. Raises BoothRejected
-        otherwise, carrying the full result on the exception.
+        """Return .answer if the result is ok, otherwise raise BoothRejected.
 
-        This does not change `.answer` itself: it stays populated on
-        rejected results (AMBIGUOUS/UNCERTAIN/BLOCKED) exactly as
-        before, intentionally, for debugging and logging visibility
-        into what got rejected. unwrap() is a stricter, opt-in
-        accessor layered on top of that existing field, not a
-        replacement for it — use it when you want a plain `str` back
-        (no `Optional[str]` handling at every call site) and you'd
-        rather handle rejection as an exception than as an `if`."""
+        .answer itself stays populated on rejected results, for debugging.
+        """
         if not self.ok or self.answer is None:
             raise BoothRejected(self)
         return self.answer
 
     def unwrap_or(self, default: str) -> str:
-        """0.5.0: like unwrap(), but returns `default` instead of
-        raising when the result isn't ok."""
+        """Like unwrap(), but return `default` instead of raising."""
         try:
             return self.unwrap()
         except BoothRejected:
             return default
 
     def to_dict(self) -> dict:
-        """Includes computed properties too — asdict(self) alone would
-        silently drop them (method, ok, etc. aren't dataclass fields)."""
+        # asdict() on the dataclass would miss the computed properties.
         return {
             "answer": self.answer,
             "status": self.status,
@@ -209,6 +185,7 @@ class BoothResult:
             "n_attempts": self.n_attempts,
             "ok": self.ok,
             "all_parse_failed": self.all_parse_failed,
+            "call_failed": self.call_failed,
             "method": self.method,
             "reason": self.reason,
             "detail": self.detail,
@@ -263,19 +240,9 @@ def _try_json(candidate: str) -> Optional[dict]:
 
 
 def _iter_raw_decoded_objects(text: str):
-    """0.4.9: fallback extractor for item 2. The flat _JSON_RE regex
-    only matches a JSON object with no nested braces at all, so an
-    object embedded in surrounding prose whose own string values
-    happen to contain brace-like text (e.g. "the config is {mode:
-    fast}") could never be recovered by regex, even though the object
-    is otherwise perfectly well-formed. json.JSONDecoder.raw_decode
-    parses a real, balanced JSON value starting at a given position —
-    it correctly treats braces inside a quoted string as ordinary
-    string content, not structure — so scanning for every '{' and
-    trying raw_decode from there recovers cases the regex categorically
-    cannot. This runs *in addition to* the regex pass above, not
-    instead of it: the regex stays first since it's cheap and covers
-    the common case; this is a more thorough, more expensive fallback.
+    """Yield every JSON object that starts at a '{' in the text.
+
+    The flat regex can't handle braces inside string values, raw_decode can.
     """
     decoder = json.JSONDecoder()
     for idx, ch in enumerate(text):
@@ -303,11 +270,7 @@ def _parse_response(raw_text: str) -> Attempt:
     candidates.extend(_JSON_RE.findall(raw_text))
     candidates.extend(_iter_raw_decoded_objects(raw_text))
 
-    # 0.4.9 item 5: track why each rejected candidate failed, so a
-    # total parse failure carries a real reason in Attempt.error
-    # instead of being silent about which of several possible schema
-    # violations actually happened.
-    last_reason: Optional[str] = None
+    last_reason: Optional[str] = None  # why the last candidate was rejected
 
     for candidate in candidates:
         obj = candidate if isinstance(candidate, dict) else _try_json(candidate)
@@ -322,21 +285,15 @@ def _parse_response(raw_text: str) -> Attempt:
             last_reason = "JSON object is missing the required 'answer' or 'confidence' key"
             continue
 
-        # 0.4.9 item 4: numeric and boolean answers are legitimate
-        # scalar values a model might return (e.g. {"answer": 42}) and
-        # are coerced to their string form for the normalized .answer
-        # field — the raw value is still preserved untouched in
-        # .parsed, same split already used for confidence. Structured
-        # values (dict/list) are still rejected outright: coercing
-        # those via str() would produce a Python repr disguised as a
-        # trustworthy answer, the exact bug fixed in 0.4.8.
+        # Scalars get stringified. dict/list would turn into a repr that
+        # looks like a real answer, so those are rejected.
         if isinstance(answer, (dict, list)):
             last_reason = "'answer' was a dict/list, not a scalar value"
             continue
         if not isinstance(answer, str):
             answer = str(answer)
 
-        if isinstance(confidence, bool):  # bool is an int subclass; reject before float()
+        if isinstance(confidence, bool):  # bool is an int subclass, so check before float()
             last_reason = "'confidence' was a boolean, not a number"
             continue
         try:
@@ -358,12 +315,7 @@ def _parse_response(raw_text: str) -> Attempt:
                 continue
             ambiguous = coerced
 
-        # 0.4.9 item 1: an empty or whitespace-only answer is a
-        # degenerate response and must not silently pass just because
-        # confidence happened to be high. AMBIGUOUS attempts are
-        # exempt — the model may legitimately leave answer blank while
-        # flagging ambiguity and providing interpretations instead, so
-        # this guard must not discard that case.
+        # A blank answer is fine when ambiguous, the interpretations carry the content.
         if not ambiguous and not answer.strip():
             last_reason = "'answer' was empty or whitespace-only"
             continue
@@ -373,7 +325,7 @@ def _parse_response(raw_text: str) -> Attempt:
             interpretations = []
         interpretations = [str(i) for i in interpretations]
         chosen = obj.get("chosen_interpretation")
-        chosen = str(chosen) if chosen is not None else None  # `is not None`, not truthy: keep 0/""/False
+        chosen = str(chosen) if chosen is not None else None  # keep falsy values like 0
 
         return Attempt(
             raw_text=raw_text,
@@ -396,9 +348,7 @@ def _parse_response(raw_text: str) -> Attempt:
 
 
 def _is_boolish(value) -> bool:
-    """True for native bool and numpy's boolean scalar, checked by type
-    name (not importing numpy). Covers both numpy's pre-2.0 "bool_" and
-    >=2.0 "bool" names."""
+    """Native bool or a numpy bool, matched by name so numpy isn't imported."""
     if isinstance(value, bool):
         return True
     t = type(value)
@@ -408,8 +358,10 @@ def _is_boolish(value) -> bool:
 def _run_validator(
     validator: Optional[ValidatorFn], answer: Optional[str]
 ) -> Tuple[bool, Optional[str]]:
-    """Accepted shapes: bool (incl. numpy.bool_), (bool, str),
-    (bool, None), and the list form of either tuple."""
+    """Run the validator. Returns (passed, error_message).
+
+    Accepts bool, (bool, str), (bool, None), or the list form of either tuple.
+    """
     if validator is None or answer is None:
         return True, None
     try:
@@ -418,7 +370,7 @@ def _run_validator(
         return False, f"Validator raised {type(e).__name__}: {e}"
 
     if inspect.iscoroutine(result):
-        result.close()  # avoid leaking a "never awaited" RuntimeWarning
+        result.close()  # avoids a "never awaited" warning
         return False, (
             "Validator returned a coroutine — validator must be "
             "synchronous. If your check needs to await something, "
@@ -450,6 +402,7 @@ def _evaluate(
     attempt_index: int,
     threshold: float,
 ) -> Optional[BoothResult]:
+    """Return a final result for this attempt, or None to keep going."""
     if attempt.parse_ok and attempt.ambiguous:
         return BoothResult(
             answer=attempt.answer,
@@ -478,6 +431,9 @@ def _evaluate(
 
 
 def _next_prompt(original_prompt: str, attempt: Attempt) -> str:
+    if attempt.call_failed:
+        # Nothing came back to comment on, so just ask again.
+        return _build_prompt(original_prompt)
     if not attempt.parse_ok:
         return _build_parse_failure_prompt(original_prompt, attempt)
     if not attempt.passed_validation:
@@ -499,9 +455,6 @@ def _finalize_uncertain(attempts: List[Attempt]) -> BoothResult:
 def _validate_args(threshold: float, max_retries: int) -> None:
     if not 0.0 <= threshold <= 1.0:
         raise ValueError(f"threshold must be between 0.0 and 1.0, got {threshold}")
-    # 0.4.8: max_retries=1.5 previously passed this check silently and
-    # crashed deep inside range(max_retries + 1) with an unhelpful
-    # TypeError far from the actual mistake.
     if not isinstance(max_retries, int):
         raise TypeError(f"max_retries must be an int, got {type(max_retries).__name__}")
     if max_retries < 0:
@@ -509,16 +462,6 @@ def _validate_args(threshold: float, max_retries: int) -> None:
 
 
 def _validate_call_args(prompt, call_fn) -> None:
-    """0.5.2: check()/acheck() previously had no defense against a
-    non-str `prompt` or a non-callable `call_fn` — check(fn, 123)
-    crashed several frames deep inside _build_prompt() with a bare
-    AttributeError ('int' object has no attribute 'rstrip'), and a
-    non-callable call_fn crashed with an unhelpful TypeError from the
-    `call_fn(current_prompt)` call site inside the retry loop, rather
-    than a clear error naming the actual mistake up front. Same
-    discipline already applied to max_retries (0.4.8) and
-    evidence_threshold (0.4.9), extended to the two remaining
-    unchecked entry-point arguments."""
     if not isinstance(prompt, str):
         raise TypeError(f"prompt must be a str, got {type(prompt).__name__}")
     if not callable(call_fn):
@@ -526,34 +469,13 @@ def _validate_call_args(prompt, call_fn) -> None:
 
 
 def _validate_on_attempt_callable(on_attempt) -> None:
-    """0.5.3: on_attempt previously had no defense against a
-    non-callable value at all. check()'s only prior guard checked for
-    *async*-ness (_is_async_callable()), which returns False for any
-    non-callable too — so a non-callable on_attempt silently passed
-    that check, then crashed with a bare, unhelpful TypeError at the
-    `on_attempt(i, attempt)` call site deep inside the retry loop,
-    *after* call_fn had already run and consumed a real attempt.
-    acheck() had no on_attempt validation of any kind before this and
-    crashed the same way, from its own call site. Same discipline as
-    _validate_call_args() (0.5.2): check callable() first, up front,
-    before anything in the loop runs, so the failure is immediate and
-    doesn't waste an LLM call. Async-ness (where relevant) is still
-    checked separately by the caller after this, since a sync-only
-    caller (check()) and a sync-or-async caller (acheck()) handle that
-    distinction differently."""
+    # Fail before any LLM call is spent.
     if on_attempt is not None and not callable(on_attempt):
         raise TypeError(f"on_attempt must be callable, got {type(on_attempt).__name__}")
 
 
 def _validate_evidence_args(evidence_threshold: float) -> None:
-    # 0.4.9 item 6: a string or None previously produced Python's
-    # generic comparison TypeError deep inside `0.0 <= evidence_threshold`,
-    # the same footgun max_retries had before 0.4.8 fixed it there.
-    # bool is explicitly rejected too (unlike max_retries, where
-    # True=1/False=0 retries is a harmless, arguably intentional
-    # reading) — a bool threshold silently becoming "require a perfect
-    # 1.0" or "accept anything" is far more likely to be a caller
-    # mistake than a deliberate choice.
+    # bool is rejected here (unlike max_retries): True/False as a threshold is almost certainly a mistake.
     if isinstance(evidence_threshold, bool) or not isinstance(evidence_threshold, (int, float)):
         raise TypeError(
             f"evidence_threshold must be a real number, got {type(evidence_threshold).__name__}"
@@ -565,13 +487,7 @@ def _validate_evidence_args(evidence_threshold: float) -> None:
 
 
 def _is_empty_evidence(evidence) -> bool:
-    """0.4.9 item 3: `not evidence` raises ValueError for a multi-element
-    numpy array ("the truth value of an array is ambiguous"), so a
-    caller passing evidence=np.array([...]) crashed instead of being
-    evaluated normally. len() works correctly for anything sized
-    (list, tuple, numpy array, str) without ever consulting __bool__;
-    anything without a length (a bare generator, say) falls back to
-    the previous truthiness check rather than raising."""
+    # len() instead of `not evidence`, which raises for multi-element numpy arrays.
     try:
         return len(evidence) == 0
     except TypeError:
@@ -586,35 +502,17 @@ def check_with_evidence(
 ) -> BoothResult:
     _validate_evidence_args(evidence_threshold)
 
-    # 0.4.9 item 3: a non-str, non-None answer (e.g. an int or a list)
-    # previously crashed with AttributeError on `answer.strip()` below
-    # instead of failing predictably. `answer=None` is left as-is —
-    # it already short-circuits safely via `not answer` and returning
-    # UNCERTAIN for a missing answer is reasonable, existing behavior.
     if answer is not None and not isinstance(answer, str):
         raise TypeError(f"answer must be a str, got {type(answer).__name__}")
 
-    # 0.5.1: split from the previous single combined `if` so
-    # EMPTY_ANSWER and NO_EVIDENCE — previously the same UNCERTAIN
-    # branch — are distinguishable via `reason`.
     if not answer or not answer.strip():
-        # 0.5.2: previously `answer=answer or None`, which only
-        # normalizes a falsy (empty) string to None. A whitespace-only
-        # string like "   " is truthy in Python, so it passed through
-        # untouched into `.answer` even though this branch's own
-        # `detail` already says "empty or whitespace-only" — two
-        # inputs producing the identical status/reason/detail ended up
-        # with different `.answer` representations. This branch's
-        # entire premise is "there is no usable answer", so `.answer`
-        # is now unconditionally None here, for both the empty-string
-        # and whitespace-only cases.
         return BoothResult(
             answer=None, status=UNCERTAIN, confidence=None,
             reason=EMPTY_ANSWER, detail="answer was empty or whitespace-only",
         )
     if _is_empty_evidence(evidence):
         return BoothResult(
-            answer=answer or None, status=UNCERTAIN, confidence=None,
+            answer=answer, status=UNCERTAIN, confidence=None,
             reason=NO_EVIDENCE, detail="evidence sequence was empty",
         )
 
@@ -626,14 +524,7 @@ def check_with_evidence(
             reason=COMPARE_FAILED, detail=f"{type(e).__name__}: {str(e)[:200]}",
         )
 
-    # 0.4.9 item 3: an async compare_fn (or a sync wrapper that itself
-    # returns a coroutine, e.g. `lambda a, e: some_async_fn(a, e)`)
-    # doesn't raise when called — it just hands back an un-awaited
-    # coroutine object. That previously either crashed confusingly
-    # inside float(raw_result) or silently fell through, and either
-    # way leaked a "coroutine was never awaited" RuntimeWarning.
-    # Detected and rejected explicitly instead, the same discipline
-    # _run_validator() already applies to an async validator.
+    # An async compare_fn just hands back a coroutine instead of raising.
     if inspect.iscoroutine(raw_result):
         raw_result.close()
         raise TypeError(
@@ -642,14 +533,7 @@ def check_with_evidence(
             "not support an async compare_fn."
         )
 
-    # 0.5.2: track *why* a BLOCKED result was produced separately from
-    # the boolean-vs-score branch that computed it. Previously the
-    # BLOCKED `detail` string always read "score X below
-    # evidence_threshold Y", even for a boolean `compare_fn` rejection
-    # — but §7.4 documents that evidence_threshold is not applied at
-    # all to boolean returns (it's a strict pass/fail). A caller
-    # reading that detail for a boolean-False rejection saw a
-    # threshold comparison described that never actually happened.
+    # Booleans are strict pass/fail, so evidence_threshold doesn't apply to them.
     if _is_boolish(raw_result):
         passed = bool(raw_result)
         score = 1.0 if passed else 0.0
@@ -686,11 +570,23 @@ def check_with_evidence(
     )
 
 
+def _attempt_from_call_error(e: Exception) -> Attempt:
+    """call_fn raised, so there is no response to parse."""
+    return Attempt(
+        raw_text=f"{type(e).__name__}: {e}",
+        answer=None,
+        confidence=None,
+        parse_ok=False,
+        error=str(e),
+        call_failed=True,
+    )
+
+
 def _call_fn_to_attempt(raw) -> Optional[Attempt]:
-    """0.4.8: call_fn succeeded but didn't return a string (None, a
-    dict, etc.). Treated the same as a call_fn exception: a failed
-    Attempt, not a crash deep inside the parser. Returns None if raw
-    IS a string, meaning normal parsing should proceed."""
+    """Turn a non-str return from call_fn into a failed Attempt.
+
+    Returns None when raw is a str, meaning normal parsing should go ahead.
+    """
     if isinstance(raw, str):
         return None
     return Attempt(
@@ -699,6 +595,7 @@ def _call_fn_to_attempt(raw) -> Optional[Attempt]:
         confidence=None,
         parse_ok=False,
         error=f"call_fn returned {type(raw).__name__}, expected str",
+        call_failed=True,
     )
 
 
@@ -711,28 +608,14 @@ def check(
     *,
     validator: Optional[ValidatorFn] = None,
 ) -> BoothResult:
-    # 0.5.2: prompt/call_fn type-checked up front, same discipline as
-    # threshold/max_retries below — see _validate_call_args.
     _validate_call_args(prompt, call_fn)
     _validate_args(threshold, max_retries)
-    # 0.4.8: check() previously had no defense against an async
-    # call_fn — it would return a coroutine, which _parse_response()
-    # then tried to .strip() as text, crashing with AttributeError
-    # and leaking an unawaited-coroutine RuntimeWarning. acheck()
-    # already rejected the opposite (sync) direction symmetrically;
-    # check() now does too.
     if _is_async_callable(call_fn):
         raise TypeError(
             "check() requires a synchronous call_fn. Use acheck() for "
             "an async call_fn (async def ... -> str, or an object "
             "with an async def __call__)."
         )
-    # 0.5.3: non-callable on_attempt is now rejected up front, before
-    # anything else about on_attempt is inspected. See
-    # _validate_on_attempt_callable's docstring for the bug this
-    # closes. The async-specific error below is still checked
-    # separately afterward — this call only guarantees on_attempt is
-    # *callable*, not that it's the right kind of callable for check().
     _validate_on_attempt_callable(on_attempt)
     if on_attempt is not None and _is_async_callable(on_attempt):
         raise TypeError(
@@ -748,13 +631,7 @@ def check(
         try:
             raw = call_fn(current_prompt)
         except Exception as e:
-            attempt = Attempt(
-                raw_text=f"{type(e).__name__}: {e}",
-                answer=None,
-                confidence=None,
-                parse_ok=False,
-                error=str(e),
-            )
+            attempt = _attempt_from_call_error(e)
         else:
             bad_return = _call_fn_to_attempt(raw)
             attempt = bad_return if bad_return is not None else _parse_response(raw)
@@ -788,8 +665,6 @@ async def acheck(
     *,
     validator: Optional[ValidatorFn] = None,
 ) -> BoothResult:
-    # 0.5.2: prompt/call_fn type-checked up front, same discipline as
-    # threshold/max_retries below — see _validate_call_args.
     _validate_call_args(prompt, call_fn)
     if not _is_async_callable(call_fn):
         raise TypeError(
@@ -798,15 +673,7 @@ async def acheck(
             "a synchronous call_fn."
         )
     _validate_args(threshold, max_retries)
-    # 0.5.3: acheck() previously had NO on_attempt validation of any
-    # kind before the retry loop — a non-callable on_attempt went
-    # straight into the `else: on_attempt(i, attempt)` branch inside
-    # the loop and crashed uncaught, after call_fn had already run.
-    # acheck() accepts both sync and async on_attempt (dispatched at
-    # call time below via _is_async_callable), so only the callable()
-    # check applies here — there's no separate "wrong kind of async"
-    # error to raise the way check() has.
-    _validate_on_attempt_callable(on_attempt)
+    _validate_on_attempt_callable(on_attempt)  # sync or async is decided per call below
 
     attempts: List[Attempt] = []
     current_prompt = _build_prompt(prompt)
@@ -815,13 +682,7 @@ async def acheck(
         try:
             raw = await call_fn(current_prompt)
         except Exception as e:
-            attempt = Attempt(
-                raw_text=f"{type(e).__name__}: {e}",
-                answer=None,
-                confidence=None,
-                parse_ok=False,
-                error=str(e),
-            )
+            attempt = _attempt_from_call_error(e)
         else:
             bad_return = _call_fn_to_attempt(raw)
             attempt = bad_return if bad_return is not None else _parse_response(raw)

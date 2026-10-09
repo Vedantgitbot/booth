@@ -8,22 +8,77 @@ surface bump the patch version.
 ## [Unreleased]
 
 Nothing yet.
-## v0.5.3 - on_attempt now validated as callable in check() and acheck() (from feedback and bugs found through contributors)
 
-- Fix: `on_attempt` is now validated as callable before the retry loop
-  starts, in both `check()` and `acheck()`. Previously a non-callable
-  `on_attempt` wasn't caught by either function — `check()`'s only
-  guard checked for *async*-ness, which doesn't catch a plain
-  non-callable, and `acheck()` had no guard at all. Both crashed with
-  a bare `TypeError` from inside the retry loop, after `call_fn` had
-  already run and consumed a real LLM call. Same validation discipline
-  already applied to `prompt`/`call_fn` in 0.5.2.
-- Audited `validator` (check()/acheck()) and `compare_fn`
-  (check_with_evidence()) for the same class of bug. Both are already
-  safe: `_run_validator()` and the `compare_fn` call site each wrap
-  the call in `try/except Exception`, so a non-callable value there
-  degrades to a clear rejection rather than crashing. No code change
-  needed for these two.
+## [v0.5.4] — call_fn failures are now distinguishable; correct retry prompt after a failed call
+
+A failed `call_fn` (bad key, retired model, network error, quota) used to look
+exactly like a model that returned garbage: `UNCERTAIN`, `method ==
+"parse_failure"`, `all_parse_failed == True`. The error was recorded on
+`attempt.error`, but nothing marked the attempt as a *call* failure, so a
+caller couldn't branch on "my API call is broken" versus "the model answered
+badly" without guessing. Reported in #9 and hit independently by a second
+contributor while running the Gemini example.
+
+- **Added `Attempt.call_failed: bool`** (default `False`). `True` when
+  `call_fn` raised, or returned something other than a `str` (so there was no
+  response to parse).
+- **Added `BoothResult.call_failed`**, a computed property: `True` only when
+  *every* attempt failed because `call_fn` failed. Same rule as
+  `all_parse_failed`, derived from the attempts rather than stored. A call that
+  fails once and then succeeds is `REPAIRED` with `call_failed == False`; the
+  blip is still visible per attempt via `attempt.call_failed`.
+- **`status` and `method` are unchanged.** A call failure still reports
+  `UNCERTAIN` / `"parse_failure"`, so existing code that branches on those keeps
+  working. `call_failed` is the new, additive signal. Changing `method` for this
+  case would be a behavior change and is left for a future breaking release.
+- **`to_dict()`** gained a top-level `"call_failed"` key. Each entry in
+  `"attempts"` includes `call_failed` automatically.
+- **Retry prompt after a failed call.** After a failed call the retry used to
+  send the "your previous response could not be parsed" prompt, even though no
+  response existed. It now sends the original prompt, exactly as in the first
+  attempt. Retries after a garbage response, low confidence, or a validation
+  failure are unchanged.
+- **Cleanup, no behavior change:** trimmed long historical comments and
+  docstrings in `core.py` down to the ones that explain non-obvious code, moved
+  the duplicated "call_fn raised" attempt construction into one helper, and
+  removed a dead `answer or None` in the `NO_EVIDENCE` branch (`answer` is
+  always non-empty there).
+- **Note for callers:** BOOTH can't tell a temporary failure from a permanent
+  one (a 401 will fail again on retry) without knowing each provider's error
+  types, which would break provider-agnosticism. Use `result.call_failed` to
+  stop early or alert, or pass `max_retries=0` if you expect config errors.
+- **New regression test file** (`test_v054_regressions.py`) covering: the flag
+  on raised calls and non-`str` returns (`None`, `dict`, `int`, `list`); garbage
+  responses and low confidence *not* being call failures; the "every attempt"
+  rule for mixed histories (fail then succeed, low confidence then fail, fail
+  then ambiguous); `status`/`method` staying unchanged; `on_attempt` seeing the
+  flag; `unwrap()` on a call failure; `check_with_evidence()` results never
+  being `call_failed`; `acheck()` parity; `to_dict()` output staying
+  JSON-serializable; and the retry prompt being identical to the first prompt
+  after a failed call while still being the parse-failure, reconsider and
+  validation prompts in the cases that should keep them.
+
+[v0.5.4]: https://github.com/Vedantgitbot/booth/releases/tag/v0.5.4
+
+## [v0.5.3] — on_attempt callable validation; py.typed (PEP 561); SPDX license metadata
+
+- **Fix: `on_attempt` is now validated as callable before the retry loop
+  starts**, in both `check()` and `acheck()`. (unchanged explanation from
+  your current entry)
+- **Added `py.typed` marker (PEP 561)** and `package-data` config so the
+  type hints ship in the wheel and are visible to mypy/pyright/Pylance.
+  Contributed by @AK-Lmn (#16). Also adds an `attempt.confidence is not
+  None` guard in `_evaluate()` to satisfy type checkers; no runtime
+  behavior change, since `parse_ok=True` always comes with a float
+  confidence.
+- **Packaging:** `license` moved to the SPDX string form (`"MIT"`) with
+  `license-files`, and the `License ::` classifier was dropped, clearing
+  the setuptools deprecation warning. Build now requires `setuptools>=77`.
+- **Audit notes (no code change):** a non-callable `compare_fn` is caught
+  and returned as `COMPARE_FAILED`. A non-callable `validator` does not
+  crash but fails validation on every attempt, spending the full retry
+  budget; an upfront check is a candidate for a later release.
+- **Tests:** (list your on_attempt regression tests here, or add them.)
 
 ## [v0.5.2] — check_with_evidence() whitespace-answer / boolean-detail fixes; prompt/call_fn type validation
 
@@ -810,7 +865,9 @@ inspection, and every fix has a dedicated regression test.
   (not blind resampling) when confidence is below a configurable
   threshold. `VERIFIED` / `REPAIRED` / `UNCERTAIN` statuses.
 
-[Unreleased]: https://github.com/Vedantgitbot/booth/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/Vedantgitbot/booth/compare/v0.5.4...HEAD
+
+[v0.5.4]: https://github.com/Vedantgitbot/booth/releases/tag/v0.5.4
 [v0.5.3]: https://github.com/Vedantgitbot/booth/releases/tag/v0.5.3
 [v0.5.2]: https://github.com/Vedantgitbot/booth/releases/tag/v0.5.2
 [v0.5.1]: https://github.com/Vedantgitbot/booth/releases/tag/v0.5.1
