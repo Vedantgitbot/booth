@@ -190,6 +190,7 @@ Want to add your own? See the [open call for provider examples](https://github.c
 * **[USECASES.md](USECASES.md)** — Detailed guide on where BOOTH fits in your architecture and where it doesn't.
 * **[CHANGELOG.md](CHANGELOG.md)** — Release notes and history of features, bug fixes, and API evolution.
 * **[examples/](https://github.com/Vedantgitbot/booth/tree/main/examples)** — Real, runnable integration examples across providers and models, with documented results.
+* **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)** — Known gotchas from real integration runs, with fixes.
 
 ---
 
