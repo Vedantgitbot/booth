@@ -29,7 +29,7 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0"]
+dev = ["pytest>=7.0", "mypy>=1.19,<2.0"]
 
 [project.urls]
 Homepage = "https://github.com/Vedantgitbot/booth"
@@ -46,3 +46,8 @@ booth = ["py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.mypy]
+# Run mypy on Python 3.12 in CI while checking compatibility with BOOTH's
+# minimum supported Python version.
+python_version = "3.9"
