@@ -29,7 +29,8 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0", "mypy>=1.19,<2.0"]
+dev = ["pytest>=7.0"]
+typecheck = ["mypy>=1.19,<2.0"]
 
 [project.urls]
 Homepage = "https://github.com/Vedantgitbot/booth"

@@ -52,8 +52,8 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install boothpy (editable, with dev deps)
-        run: pip install -e ".[dev]"
+      - name: Install boothpy (editable, with typecheck deps)
+        run: pip install -e ".[typecheck]"
 
       - name: Run mypy
         run: mypy src/booth/

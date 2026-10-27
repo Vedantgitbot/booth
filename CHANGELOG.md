@@ -7,7 +7,7 @@ surface bump the patch version.
 
 ## [Unreleased]
 
-Nothing yet.
+- CI: added a mypy job that type-checks `src/booth/` against the Python 3.9 target (thanks @rk042, #25). mypy is installed via a new `typecheck` extra, not `dev`. No library change.
 
 ## [v0.5.6] — Iterable[str] type hint for evidence; docs and packaging fixes
 
