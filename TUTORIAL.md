@@ -180,10 +180,10 @@ else:
 
 `call_fn` is the function BOOTH uses to communicate with your LLM.
 
-It receives the generated prompt and normally returns the model's response as
-a string. A provider that already returns a structured dictionary may return
-that dictionary directly instead; BOOTH sends it through the same validation,
-retry, and result pipeline without string extraction.
+It receives the generated prompt and must return the model's response as a
+string. If a provider uses a format that BOOTH's default JSON extraction does
+not understand, use `parse_fn` to convert that string into a structured
+dictionary.
 
 ```python
 
@@ -222,26 +222,6 @@ result = booth.check(
 ```
 
 The important requirement is that `check()` receives a synchronous callable.
-
-### Structured provider responses
-
-If a provider returns a dictionary instead of text, the dictionary must
-contain the required `answer` and `confidence` fields. Extra fields are kept
-in `result.parsed`:
-
-```python
-def call_llm(prompt: str) -> dict:
-    return {
-        "answer": "Paris",
-        "confidence": 0.95,
-        "provider_id": "response-123",
-    }
-
-result = booth.check(call_llm, "What is the capital of France?")
-```
-
-This path bypasses BOOTH's text extraction, but it does not bypass ambiguity,
-validation, confidence, retry, or `BoothResult` handling.
 
 As of `v0.5.2`, a non-callable `call_fn` (a plain string, an `int`, etc.) raises `TypeError` immediately, rather than crashing deep inside the retry loop the first time BOOTH tries to invoke it:
 
@@ -383,7 +363,7 @@ Validator failure
 
     → show the validation failure and ask for a correction
 
-Call failure (call_fn raised or returned an unsupported type)
+Call failure (call_fn raised or returned a non-string)
 
     → ask again with the original prompt
 
@@ -668,11 +648,12 @@ If your application needs asynchronous work for validation, perform that work be
 
 `parse_fn` is an optional synchronous parser for providers that return a
 string in a format that the default JSON extraction should not interpret. It
-receives the raw string returned by `call_fn` and must return the structured
-dictionary that BOOTH normally extracts:
+receives the raw string returned by `call_fn` and must return either the
+structured dictionary that BOOTH normally extracts or `None` when parsing
+fails:
 
 ```python
-def parse_provider_response(raw: str) -> dict:
+def parse_provider_response(raw: str) -> Optional[dict]:
     provider_response = provider_decode(raw)
     return {
         "answer": provider_response.answer,
@@ -691,7 +672,10 @@ The returned dictionary follows the same rules as a normal parsed response:
 `result.parsed`. A parser exception or invalid parser result is reported as a
 normal parse failure and follows the existing retry behavior. `parse_fn` is
 synchronous for both `check()` and `acheck()`; resolve asynchronous provider
-decoding before calling BOOTH.
+decoding before calling BOOTH. Retry prompts are unchanged: a failed
+`parse_fn` result receives the existing JSON-style parse-failure retry prompt.
+If the provider-native response should not receive that JSON-style retry
+prompt, use `max_retries=0` unless your application intentionally wants it.
 
 ---
 
@@ -834,8 +818,7 @@ REPAIRED
 # 6. `acheck()`
 
 `acheck()` is the asynchronous equivalent of `check()`. It accepts the same
-`parse_fn` option and also accepts a pre-parsed dictionary from its async
-`call_fn`.
+`parse_fn` option; its async `call_fn` must still return a string.
 
 ```python
 
@@ -1907,10 +1890,9 @@ if not attempt.parse_ok:
 
 ```
 
-A call whose `call_fn` succeeded but returned an unsupported type (for example
-`None` or a list) is also recorded here as a failed attempt rather than
-raising — check `attempt.error` for the reason. A dictionary is supported as a
-pre-parsed structured response when it contains the required fields.
+A call whose `call_fn` succeeded but returned a non-string type (for example
+`None`, a dictionary, or a list) is also recorded here as a failed attempt
+rather than raising — check `attempt.error` for the reason.
 
 ---
 
@@ -1930,9 +1912,8 @@ As of `v0.4.9`, a parse failure always carries a specific, human-readable reason
 
 ## `Attempt.call_failed`
 
-Added in `v0.5.4`. `True` when `call_fn` raised an exception, or returned an
-unsupported type, so there was no response to parse. A dictionary is now a
-supported pre-parsed response and does not set `call_failed`.
+Added in `v0.5.4`. `True` when `call_fn` raised an exception, or returned
+something other than a string, so there was no response to parse.
 
 ```python
 
@@ -2158,7 +2139,7 @@ This property is specific to `check()`/`acheck()` results — a `check_with_evid
 
 ## 17.1 `BoothResult.call_failed`
 
-`call_failed` is a computed property added in `v0.5.4`. It is `True` when every attempt failed because `call_fn` itself failed: it raised an exception (a bad API key, a retired model name, a network error), or returned an unsupported type. A pre-parsed dictionary is not a call failure.
+`call_failed` is a computed property added in `v0.5.4`. It is `True` when every attempt failed because `call_fn` itself failed: it raised an exception (a bad API key, a retired model name, a network error), or returned something other than a string.
 
 ```python
 
@@ -2644,22 +2625,7 @@ This is useful when type-checking application code that supplies validators to B
 
 ---
 
-# 25. `ParseFn`
-
-`ParseFn` is the public type for a synchronous parser used with `parse_fn`.
-
-```python
-from booth import ParseFn
-
-def parse_provider_response(raw: str) -> dict:
-    return {"answer": "Paris", "confidence": 0.9}
-
-parser: ParseFn = parse_provider_response
-```
-
----
-
-# 26. Complete Synchronous Example
+# 25. Complete Synchronous Example
 
 The following example combines the main BOOTH features:
 
@@ -2731,7 +2697,7 @@ def ask(prompt: str):
 
 ---
 
-# 27. Complete Async Example
+# 26. Complete Async Example
 
 ```python
 
@@ -2771,7 +2737,7 @@ async def ask(prompt: str):
 
 ---
 
-# 28. Combining Text Checking and Evidence Checking
+# 27. Combining Text Checking and Evidence Checking
 
 `check()` and `check_with_evidence()` are separate operations.
 
@@ -2829,7 +2795,7 @@ else:
 
 ---
 
-# 29. Inspecting Every Attempt
+# 28. Inspecting Every Attempt
 
 When debugging or evaluating model behavior, inspect `attempts`:
 
@@ -2873,7 +2839,7 @@ For a `check_with_evidence()` result, there's no attempt history to loop over �
 
 ---
 
-# 30. Public API
+# 29. Public API
 
 The public package exports the following:
 
@@ -2957,6 +2923,22 @@ booth.ParseFn
 
 ```
 
+## `ParseFn`
+
+`ParseFn` is the public type for a synchronous parser used with `parse_fn`.
+It accepts the raw string returned by `call_fn` and returns a dictionary or
+`None` when parsing fails.
+
+```python
+from typing import Optional
+from booth import ParseFn
+
+def parse_provider_response(raw: str) -> Optional[dict]:
+    return {"answer": "Paris", "confidence": 0.9}
+
+parser: ParseFn = parse_provider_response
+```
+
 The status constants are:
 
 ```python
@@ -3001,7 +2983,7 @@ booth.DEFAULT_MAX_RETRIES
 
 ---
 
-# 31. Quick Reference (v0.5.2 to v0.5.6)
+# 30. Quick Reference (v0.5.2 to v0.5.6)
 
 ## Functions
 
@@ -3085,6 +3067,8 @@ These arguments raise a clear, specific error at the call site rather than crash
 
 | `on_attempt`          | `check()`, `acheck()`               | `TypeError` if not callable (v0.5.3); `check()` also rejects an async one |
 
+| `parse_fn`            | `check()`, `acheck()`               | `TypeError` if not callable; must be synchronous                 |
+
 | `answer`              | `check_with_evidence()`             | `TypeError` if not `str`/`None` (v0.4.9)              |
 
 | `evidence_threshold`  | `check_with_evidence()`             | `TypeError` if not a real number; `ValueError` if outside `[0.0, 1.0]` |
@@ -3151,7 +3135,7 @@ Use `to_dict()` when you need the complete result in a JSON-compatible dictionar
 
 ---
 
-# 32. The Core Mental Model
+# 31. The Core Mental Model
 
 The easiest way to understand BOOTH is:
 

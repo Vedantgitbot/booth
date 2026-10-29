@@ -17,9 +17,8 @@ before being fixed here:
   1. check() had no defense against an async call_fn (acheck() already
      rejected the opposite direction). Fixed symmetrically.
   2. check()/acheck() crashed (AttributeError) if call_fn succeeded
-     but returned an unsupported type. Unsupported returns now become a
-     failed Attempt, while structured dictionaries use the Issue #6 escape
-     hatch and enter the normal parsing pipeline.
+     but returned something other than a string. Now becomes a failed
+     Attempt, same treatment as a call_fn exception.
   3. max_retries=1.5 passed _validate_args() silently, then crashed
      deep in range(max_retries + 1) with an unhelpful TypeError.
   4. A non-string `answer` field (e.g. a dict) was silently
@@ -152,14 +151,14 @@ def test_check_none_return_becomes_uncertain():
     assert "call_fn returned NoneType" in result.attempts[0].error
 
 
-def test_check_incomplete_dict_return_becomes_parse_failure():
+def test_check_dict_return_becomes_uncertain():
     def returns_dict(prompt):
         return {"answer": "Paris"}
 
     result = booth.check(returns_dict, "q", max_retries=0)
     assert result.status == booth.UNCERTAIN
     assert result.all_parse_failed is True
-    assert "missing the required" in result.attempts[0].error
+    assert "call_fn returned dict" in result.attempts[0].error
 
 
 def test_acheck_none_return_becomes_uncertain():

@@ -6,7 +6,7 @@ from typing import Any, Awaitable, Callable, Iterable, List, Optional, Sequence,
 
 CompareFn = Callable[[str, Sequence[str]], Union[bool, float]]
 ValidatorFn = Callable[[str], Union[bool, Tuple[bool, str]]]
-ParseFn = Callable[[str], dict]
+ParseFn = Callable[[str], Optional[dict]]
 
 ACCEPTED = "ACCEPTED"
 REPAIRED = "REPAIRED"
@@ -83,8 +83,8 @@ class Attempt:
     passed_validation: bool = True
     validation_error: Optional[str] = None
     parsed: Optional[dict] = None
-    # True when call_fn raised or returned an unsupported type, so there was
-    # no response to parse.
+    # True when call_fn raised or returned a non-string, so there was no
+    # response to parse.
     call_failed: bool = False
 
 
@@ -642,25 +642,23 @@ def _attempt_from_call_error(e: Exception) -> Attempt:
 
 
 def _call_fn_to_attempt(raw) -> Optional[Attempt]:
-    """Turn an unsupported return from call_fn into a failed Attempt.
+    """Turn a non-string return from call_fn into a failed Attempt.
 
-    Returns None when raw is a supported str or dict.
+    Returns None when raw is a str, meaning normal parsing should go ahead.
     """
-    if isinstance(raw, (str, dict)):
+    if isinstance(raw, str):
         return None
     return Attempt(
         raw_text=repr(raw),
         answer=None,
         confidence=None,
         parse_ok=False,
-        error=f"call_fn returned {type(raw).__name__}, expected str or dict",
+        error=f"call_fn returned {type(raw).__name__}, expected str",
         call_failed=True,
     )
 
 
 def _parse_call_response(raw, parse_fn: Optional[ParseFn]) -> Attempt:
-    if isinstance(raw, dict):
-        return _attempt_from_parsed_response(raw, repr(raw))
     if parse_fn is None:
         return _parse_response(raw)
     try:
@@ -671,7 +669,7 @@ def _parse_call_response(raw, parse_fn: Optional[ParseFn]) -> Attempt:
 
 
 def check(
-    call_fn: Callable[[str], Union[str, dict]],
+    call_fn: Callable[[str], str],
     prompt: str,
     threshold: float = DEFAULT_THRESHOLD,
     max_retries: int = DEFAULT_MAX_RETRIES,
@@ -729,7 +727,7 @@ def check(
 
 
 async def acheck(
-    call_fn: Callable[[str], Awaitable[Union[str, dict]]],
+    call_fn: Callable[[str], Awaitable[str]],
     prompt: str,
     threshold: float = DEFAULT_THRESHOLD,
     max_retries: int = DEFAULT_MAX_RETRIES,
