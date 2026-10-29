@@ -8,7 +8,7 @@ surface bump the patch version.
 ## [Unreleased]
 
 - CI: added a mypy job that type-checks `src/booth/` against the Python 3.9 target (thanks @rk042, #25). mypy is installed via a new `typecheck` extra, not `dev`. No library change.
-- **Added a structured-output escape hatch.** `check()` and `acheck()` can now use a synchronous `parse_fn` for provider-specific string decoding. The parser result feeds the existing validation, retry, confidence, ambiguity, and `BoothResult` pipeline; normal string parsing is unchanged. Fixes #6.
+- **Added a structured-output escape hatch.** `check()` and `acheck()` can now use a synchronous `parse_fn` for provider-specific string decoding. The parser result feeds the existing validation, retry, confidence, ambiguity, and `BoothResult` pipeline; normal string parsing is unchanged. (thanks @rk042, #26). Fixes #6.
 
 ## [v0.5.6] — Iterable[str] type hint for evidence; docs and packaging fixes
 

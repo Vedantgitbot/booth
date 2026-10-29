@@ -145,3 +145,41 @@ def test_async_parse_fn_is_rejected():
 
 def test_parse_fn_is_publicly_exported():
     assert booth.ParseFn is not None
+
+
+def test_parse_fn_exception_is_parse_failure_and_can_retry():
+    calls = {"n": 0}
+
+    def parse_fn(raw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ValueError("provider payload was incomplete")
+        return {"answer": "Paris", "confidence": 0.9}
+
+    result = booth.check(
+        lambda prompt: "provider-native-payload",
+        "q",
+        parse_fn=parse_fn,
+        max_retries=1,
+    )
+
+    assert result.status == booth.REPAIRED
+    assert result.n_attempts == 2
+    assert result.attempts[0].call_failed is False
+    assert result.attempts[0].parse_ok is False
+    assert "ValueError" in result.attempts[0].error
+
+
+def test_dict_return_is_still_a_call_failure_even_with_parse_fn():
+    seen = []
+
+    result = booth.check(
+        lambda prompt: {"answer": "Paris", "confidence": 0.9},
+        "q",
+        parse_fn=lambda raw: seen.append(raw),
+        max_retries=0,
+    )
+
+    assert result.call_failed is True
+    assert "expected str" in result.attempts[0].error
+    assert seen == []  # parse_fn is never reached
