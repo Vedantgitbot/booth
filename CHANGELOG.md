@@ -931,7 +931,7 @@ inspection, and every fix has a dedicated regression test.
   (not blind resampling) when confidence is below a configurable
   threshold. `VERIFIED` / `REPAIRED` / `UNCERTAIN` statuses.
 
-[Unreleased]: https://github.com/Vedantgitbot/booth/compare/v0.5.6...HEAD
+[Unreleased]: https://github.com/Vedantgitbot/booth/compare/v0.5.7...HEAD
 
 [v0.5.7]: https://github.com/Vedantgitbot/booth/releases/tag/v0.5.7
 [v0.5.6]: https://github.com/Vedantgitbot/booth/releases/tag/v0.5.6
