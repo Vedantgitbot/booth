@@ -6,6 +6,7 @@ from typing import Any, Awaitable, Callable, Iterable, List, Optional, Sequence,
 
 CompareFn = Callable[[str, Sequence[str]], Union[bool, float]]
 ValidatorFn = Callable[[str], Union[bool, Tuple[bool, str]]]
+ParseFn = Callable[[str], dict]
 
 ACCEPTED = "ACCEPTED"
 REPAIRED = "REPAIRED"
@@ -82,7 +83,8 @@ class Attempt:
     passed_validation: bool = True
     validation_error: Optional[str] = None
     parsed: Optional[dict] = None
-    # True when call_fn raised or returned a non-str, so there was no response to parse.
+    # True when call_fn raised or returned an unsupported type, so there was
+    # no response to parse.
     call_failed: bool = False
 
 
@@ -256,6 +258,78 @@ def _iter_raw_decoded_objects(text: str):
             yield obj
 
 
+def _attempt_from_parsed(parsed, raw_text: str) -> Tuple[Optional[Attempt], Optional[str]]:
+    if not isinstance(parsed, dict):
+        return None, f"parsed response was {type(parsed).__name__}, expected dict"
+
+    answer = parsed.get("answer")
+    confidence = parsed.get("confidence")
+    if answer is None or confidence is None:
+        return None, "JSON object is missing the required 'answer' or 'confidence' key"
+
+    # Scalars get stringified. dict/list would turn into a repr that
+    # looks like a real answer, so those are rejected.
+    if isinstance(answer, (dict, list)):
+        return None, "'answer' was a dict/list, not a scalar value"
+    if not isinstance(answer, str):
+        answer = str(answer)
+
+    if isinstance(confidence, bool):  # bool is an int subclass, so check before float()
+        return None, "'confidence' was a boolean, not a number"
+    try:
+        confidence = float(confidence)
+    except (TypeError, ValueError):
+        return None, f"'confidence' could not be converted to a float: {confidence!r}"
+    if not 0.0 <= confidence <= 1.0:
+        return None, f"'confidence' {confidence} is out of the [0.0, 1.0] range"
+
+    raw_ambiguous = parsed.get("ambiguous", _MISSING)
+    if raw_ambiguous is _MISSING:
+        ambiguous = False
+    else:
+        coerced = _coerce_ambiguous(raw_ambiguous)
+        if coerced is None:
+            return None, f"'ambiguous' had an unrecognized value: {raw_ambiguous!r}"
+        ambiguous = coerced
+
+    # A blank answer is fine when ambiguous, the interpretations carry the content.
+    if not ambiguous and not answer.strip():
+        return None, "'answer' was empty or whitespace-only"
+
+    interpretations = parsed.get("interpretations") or []
+    if not isinstance(interpretations, list):
+        interpretations = []
+    interpretations = [str(i) for i in interpretations]
+    chosen = parsed.get("chosen_interpretation")
+    chosen = str(chosen) if chosen is not None else None  # keep falsy values like 0
+
+    return Attempt(
+        raw_text=raw_text,
+        answer=answer,
+        confidence=confidence,
+        parse_ok=True,
+        ambiguous=ambiguous,
+        interpretations=interpretations,
+        chosen_interpretation=chosen,
+        parsed=parsed,
+    ), None
+
+
+def _failed_parse_attempt(raw_text: str, error: str) -> Attempt:
+    return Attempt(
+        raw_text=raw_text,
+        answer=None,
+        confidence=None,
+        parse_ok=False,
+        error=error,
+    )
+
+
+def _attempt_from_parsed_response(parsed, raw_text: str) -> Attempt:
+    attempt, error = _attempt_from_parsed(parsed, raw_text)
+    return attempt if attempt is not None else _failed_parse_attempt(raw_text, error or "invalid parsed response")
+
+
 def _parse_response(raw_text: str) -> Attempt:
     candidates: List[Union[str, dict]] = []
 
@@ -279,64 +353,10 @@ def _parse_response(raw_text: str) -> Attempt:
                 last_reason = "no candidate contained a valid JSON object"
             continue
 
-        answer = obj.get("answer")
-        confidence = obj.get("confidence")
-        if answer is None or confidence is None:
-            last_reason = "JSON object is missing the required 'answer' or 'confidence' key"
-            continue
-
-        # Scalars get stringified. dict/list would turn into a repr that
-        # looks like a real answer, so those are rejected.
-        if isinstance(answer, (dict, list)):
-            last_reason = "'answer' was a dict/list, not a scalar value"
-            continue
-        if not isinstance(answer, str):
-            answer = str(answer)
-
-        if isinstance(confidence, bool):  # bool is an int subclass, so check before float()
-            last_reason = "'confidence' was a boolean, not a number"
-            continue
-        try:
-            confidence = float(confidence)
-        except (TypeError, ValueError):
-            last_reason = f"'confidence' could not be converted to a float: {confidence!r}"
-            continue
-        if not 0.0 <= confidence <= 1.0:
-            last_reason = f"'confidence' {confidence} is out of the [0.0, 1.0] range"
-            continue
-
-        raw_ambiguous = obj.get("ambiguous", _MISSING)
-        if raw_ambiguous is _MISSING:
-            ambiguous = False
-        else:
-            coerced = _coerce_ambiguous(raw_ambiguous)
-            if coerced is None:
-                last_reason = f"'ambiguous' had an unrecognized value: {raw_ambiguous!r}"
-                continue
-            ambiguous = coerced
-
-        # A blank answer is fine when ambiguous, the interpretations carry the content.
-        if not ambiguous and not answer.strip():
-            last_reason = "'answer' was empty or whitespace-only"
-            continue
-
-        interpretations = obj.get("interpretations") or []
-        if not isinstance(interpretations, list):
-            interpretations = []
-        interpretations = [str(i) for i in interpretations]
-        chosen = obj.get("chosen_interpretation")
-        chosen = str(chosen) if chosen is not None else None  # keep falsy values like 0
-
-        return Attempt(
-            raw_text=raw_text,
-            answer=answer,
-            confidence=confidence,
-            parse_ok=True,
-            ambiguous=ambiguous,
-            interpretations=interpretations,
-            chosen_interpretation=chosen,
-            parsed=obj,
-        )
+        attempt, error = _attempt_from_parsed(obj, raw_text)
+        if attempt is not None:
+            return attempt
+        last_reason = error
 
     return Attempt(
         raw_text=raw_text,
@@ -472,6 +492,16 @@ def _validate_on_attempt_callable(on_attempt) -> None:
     # Fail before any LLM call is spent.
     if on_attempt is not None and not callable(on_attempt):
         raise TypeError(f"on_attempt must be callable, got {type(on_attempt).__name__}")
+
+
+def _validate_parse_fn_callable(parse_fn) -> None:
+    if parse_fn is not None and not callable(parse_fn):
+        raise TypeError(f"parse_fn must be callable, got {type(parse_fn).__name__}")
+    if parse_fn is not None and _is_async_callable(parse_fn):
+        raise TypeError(
+            "parse_fn must be synchronous. Resolve asynchronous parsing "
+            "before calling check() or acheck()."
+        )
 
 
 def _validate_validator_callable(validator) -> None:
@@ -612,30 +642,43 @@ def _attempt_from_call_error(e: Exception) -> Attempt:
 
 
 def _call_fn_to_attempt(raw) -> Optional[Attempt]:
-    """Turn a non-str return from call_fn into a failed Attempt.
+    """Turn an unsupported return from call_fn into a failed Attempt.
 
-    Returns None when raw is a str, meaning normal parsing should go ahead.
+    Returns None when raw is a supported str or dict.
     """
-    if isinstance(raw, str):
+    if isinstance(raw, (str, dict)):
         return None
     return Attempt(
         raw_text=repr(raw),
         answer=None,
         confidence=None,
         parse_ok=False,
-        error=f"call_fn returned {type(raw).__name__}, expected str",
+        error=f"call_fn returned {type(raw).__name__}, expected str or dict",
         call_failed=True,
     )
 
 
+def _parse_call_response(raw, parse_fn: Optional[ParseFn]) -> Attempt:
+    if isinstance(raw, dict):
+        return _attempt_from_parsed_response(raw, repr(raw))
+    if parse_fn is None:
+        return _parse_response(raw)
+    try:
+        parsed = parse_fn(raw)
+    except Exception as e:
+        return _failed_parse_attempt(raw, f"parse_fn raised {type(e).__name__}: {e}")
+    return _attempt_from_parsed_response(parsed, raw)
+
+
 def check(
-    call_fn: Callable[[str], str],
+    call_fn: Callable[[str], Union[str, dict]],
     prompt: str,
     threshold: float = DEFAULT_THRESHOLD,
     max_retries: int = DEFAULT_MAX_RETRIES,
     on_attempt: Optional[Callable[[int, Attempt], Any]] = None,
     *,
     validator: Optional[ValidatorFn] = None,
+    parse_fn: Optional[ParseFn] = None,
 ) -> BoothResult:
     _validate_call_args(prompt, call_fn)
     _validate_args(threshold, max_retries)
@@ -647,6 +690,7 @@ def check(
         )
     _validate_on_attempt_callable(on_attempt)
     _validate_validator_callable(validator)
+    _validate_parse_fn_callable(parse_fn)
     if on_attempt is not None and _is_async_callable(on_attempt):
         raise TypeError(
             "check() cannot await an async on_attempt callback. "
@@ -664,7 +708,7 @@ def check(
             attempt = _attempt_from_call_error(e)
         else:
             bad_return = _call_fn_to_attempt(raw)
-            attempt = bad_return if bad_return is not None else _parse_response(raw)
+            attempt = bad_return if bad_return is not None else _parse_call_response(raw, parse_fn)
 
         if attempt.parse_ok and not attempt.ambiguous:
             passed, err = _run_validator(validator, attempt.answer)
@@ -685,7 +729,7 @@ def check(
 
 
 async def acheck(
-    call_fn: Callable[[str], Awaitable[str]],
+    call_fn: Callable[[str], Awaitable[Union[str, dict]]],
     prompt: str,
     threshold: float = DEFAULT_THRESHOLD,
     max_retries: int = DEFAULT_MAX_RETRIES,
@@ -694,6 +738,7 @@ async def acheck(
     ] = None,
     *,
     validator: Optional[ValidatorFn] = None,
+    parse_fn: Optional[ParseFn] = None,
 ) -> BoothResult:
     _validate_call_args(prompt, call_fn)
     if not _is_async_callable(call_fn):
@@ -705,6 +750,7 @@ async def acheck(
     _validate_args(threshold, max_retries)
     _validate_on_attempt_callable(on_attempt)  # sync or async is decided per call below
     _validate_validator_callable(validator)
+    _validate_parse_fn_callable(parse_fn)
 
     attempts: List[Attempt] = []
     current_prompt = _build_prompt(prompt)
@@ -716,7 +762,7 @@ async def acheck(
             attempt = _attempt_from_call_error(e)
         else:
             bad_return = _call_fn_to_attempt(raw)
-            attempt = bad_return if bad_return is not None else _parse_response(raw)
+            attempt = bad_return if bad_return is not None else _parse_call_response(raw, parse_fn)
 
         if attempt.parse_ok and not attempt.ambiguous:
             passed, err = _run_validator(validator, attempt.answer)

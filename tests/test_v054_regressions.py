@@ -1,7 +1,7 @@
 """
 Regression tests for v0.5.4.
 
-1. A failed call_fn (raised, or returned a non-str) is now marked on the
+1. A failed call_fn (raised, or returned an unsupported type) is now marked on the
    attempt (Attempt.call_failed) and on the result (BoothResult.call_failed),
    so it can be told apart from a model that returned garbage.
 2. After a failed call, the retry sends the original prompt instead of the
@@ -98,15 +98,15 @@ def test_single_attempt_call_failure():
     assert result.call_failed is True
 
 
-@pytest.mark.parametrize("bad_return", [None, {"answer": "x"}, 42, ["a"]])
-def test_non_str_return_counts_as_call_failure(bad_return):
+@pytest.mark.parametrize("bad_return", [None, 42, ["a"]])
+def test_unsupported_non_str_return_counts_as_call_failure(bad_return):
     fn = scripted(bad_return, bad_return)
     result = booth.check(fn, "q", max_retries=1)
 
     assert result.status == booth.UNCERTAIN
     assert all(a.call_failed for a in result.attempts)
     assert result.call_failed is True
-    assert "expected str" in result.attempts[-1].error
+    assert "expected str or dict" in result.attempts[-1].error
 
 
 def test_garbage_response_is_not_a_call_failure():
