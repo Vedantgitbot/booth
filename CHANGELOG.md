@@ -7,6 +7,8 @@ surface bump the patch version.
 
 ## [Unreleased]
 
+## [v0.5.7] — parse_fn structured-output escape hatch
+
 - CI: added a mypy job that type-checks `src/booth/` against the Python 3.9 target (thanks @rk042, #25). mypy is installed via a new `typecheck` extra, not `dev`. No library change.
 - **Added a structured-output escape hatch.** `check()` and `acheck()` can now use a synchronous `parse_fn` for provider-specific string decoding. The parser result feeds the existing validation, retry, confidence, ambiguity, and `BoothResult` pipeline; normal string parsing is unchanged. (thanks @rk042, #26). Fixes #6.
 
@@ -931,6 +933,7 @@ inspection, and every fix has a dedicated regression test.
 
 [Unreleased]: https://github.com/Vedantgitbot/booth/compare/v0.5.6...HEAD
 
+[v0.5.7]: https://github.com/Vedantgitbot/booth/releases/tag/v0.5.7
 [v0.5.6]: https://github.com/Vedantgitbot/booth/releases/tag/v0.5.6
 [v0.5.5]: https://github.com/Vedantgitbot/booth/releases/tag/v0.5.5
 [v0.5.4]: https://github.com/Vedantgitbot/booth/releases/tag/v0.5.4

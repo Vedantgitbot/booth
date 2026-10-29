@@ -1,4 +1,4 @@
-"""Tests for the parse_fn structured-output escape hatch."""
+"""Regression tests for v0.5.7: the parse_fn structured-output escape hatch."""
 
 import asyncio
 

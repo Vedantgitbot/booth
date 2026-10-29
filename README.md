@@ -22,16 +22,16 @@
   <a href="https://github.com/Vedantgitbot/booth/actions/workflows/tests.yml">
     <img src="https://github.com/Vedantgitbot/booth/actions/workflows/tests.yml/badge.svg" alt="Tests Status">
   </a>
-  <a href="LICENSE">
+  <a href="https://github.com/Vedantgitbot/booth/blob/main/LICENSE">
     <img src="https://img.shields.io/github/license/Vedantgitbot/booth" alt="MIT License">
   </a>
 </p>
 
 <p align="center">
-  <a href="TUTORIAL.md">Tutorial</a> &bull;
-  <a href="USECASES.md">Use Cases</a> &bull;
-  <a href="CHANGELOG.md">Changelog</a> &bull;
-  <a href="CONTRIBUTING.md">Contributing</a> &bull;
+  <a href="https://github.com/Vedantgitbot/booth/blob/main/TUTORIAL.md">Tutorial</a> &bull;
+  <a href="https://github.com/Vedantgitbot/booth/blob/main/USECASES.md">Use Cases</a> &bull;
+  <a href="https://github.com/Vedantgitbot/booth/blob/main/CHANGELOG.md">Changelog</a> &bull;
+  <a href="https://github.com/Vedantgitbot/booth/blob/main/CONTRIBUTING.md">Contributing</a> &bull;
   <a href="https://github.com/Vedantgitbot/booth/issues">Issues</a>
 </p>
 
@@ -212,7 +212,7 @@ Failure categories include `ambiguity`, `confidence`, `validation`, and `parse_f
 
 BOOTH has zero dependencies and is provider-agnostic. Your application supplies the model-calling function, so BOOTH does not require a particular LLM client or provider.
 
-[Browse the runnable integration examples →](examples/)
+[Browse the runnable integration examples →](https://github.com/Vedantgitbot/booth/tree/main/examples)
 
 Each example folder includes runnable code, recorded console output, and findings from an actual run.
 
@@ -285,12 +285,12 @@ To contribute an integration, see the [open call for provider examples](https://
 
 | Resource | What it covers |
 | :--- | :--- |
-| [Tutorial](TUTORIAL.md) | Reference for BOOTH's functions, types, properties, and methods. |
-| [Use Cases](USECASES.md) | Where BOOTH fits in your architecture—and where it does not. |
-| [Changelog](CHANGELOG.md) | Releases, bug fixes, and API changes. |
-| [Examples](examples/) | Runnable integrations with documented results. |
-| [Troubleshooting](TROUBLESHOOTING.md) | Known integration issues and fixes. |
-| [Contributing](CONTRIBUTING.md) | Bug reports, reproductions, and contribution guidelines. |
+| [Tutorial](https://github.com/Vedantgitbot/booth/blob/main/TUTORIAL.md) | Reference for BOOTH's functions, types, properties, and methods. |
+| [Use Cases](https://github.com/Vedantgitbot/booth/blob/main/USECASES.md) | Where BOOTH fits in your architecture—and where it does not. |
+| [Changelog](https://github.com/Vedantgitbot/booth/blob/main/CHANGELOG.md) | Releases, bug fixes, and API changes. |
+| [Examples](https://github.com/Vedantgitbot/booth/tree/main/examples) | Runnable integrations with documented results. |
+| [Troubleshooting](https://github.com/Vedantgitbot/booth/blob/main/TROUBLESHOOTING.md) | Known integration issues and fixes. |
+| [Contributing](https://github.com/Vedantgitbot/booth/blob/main/CONTRIBUTING.md) | Bug reports, reproductions, and contribution guidelines. |
 
 ---
 
@@ -300,7 +300,7 @@ BOOTH is small on purpose. That's a design constraint, not a lack of ambition.
 
 Bug reports and confirmed edge cases are especially valuable.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for:
+See [CONTRIBUTING.md](https://github.com/Vedantgitbot/booth/blob/main/CONTRIBUTING.md) for:
 
 - How to report a bug.
 - What makes a useful reproduction.
@@ -312,4 +312,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for:
 
 This is the official BOOTH repository, maintained by Vedant Brahmbhatt.
 
-BOOTH is released under the MIT License. See [LICENSE](LICENSE) for the full text.
+BOOTH is released under the MIT License. See [LICENSE](https://github.com/Vedantgitbot/booth/blob/main/LICENSE) for the full text.

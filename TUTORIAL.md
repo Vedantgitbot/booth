@@ -2983,7 +2983,7 @@ booth.DEFAULT_MAX_RETRIES
 
 ---
 
-# 30. Quick Reference (v0.5.2 to v0.5.6)
+# 30. Quick Reference (v0.5.2 to v0.5.7)
 
 ## Functions
 
