@@ -28,11 +28,11 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Vedantgitbot/booth/blob/main/TUTORIAL.md">Tutorial</a> &bull;
-  <a href="https://github.com/Vedantgitbot/booth/blob/main/USECASES.md">Use Cases</a> &bull;
-  <a href="https://github.com/Vedantgitbot/booth/blob/main/CHANGELOG.md">Changelog</a> &bull;
-  <a href="https://github.com/Vedantgitbot/booth/blob/main/CONTRIBUTING.md">Contributing</a> &bull;
-  <a href="https://github.com/Vedantgitbot/booth/issues">Issues</a>
+  <a href="https://github.com/Vedantgitbot/booth/blob/main/TUTORIAL.md"><strong>Tutorial</strong></a> &bull;
+  <a href="https://github.com/Vedantgitbot/booth/blob/main/USECASES.md"><strong>Use Cases</strong></a> &bull;
+  <a href="https://github.com/Vedantgitbot/booth/blob/main/CHANGELOG.md"><strong>Changelog</strong></a> &bull;
+  <a href="https://github.com/Vedantgitbot/booth/blob/main/CONTRIBUTING.md"><strong>Contributing</strong></a> &bull;
+  <a href="https://github.com/Vedantgitbot/booth/issues"><strong>Issues</strong></a>
 </p>
 
 ---
@@ -58,7 +58,8 @@ Pass your existing model-calling function to `booth.check()`:
 ```python
 import booth
 
-# call_llm is your existing model-calling function.
+# call_llm is your existing model-calling function. It takes a prompt
+# string and returns the model's response as a string.
 result = booth.check(call_llm, "What is the capital of France?")
 
 if result.ok:
@@ -68,6 +69,30 @@ else:
 ```
 
 An accepted result means the configured checks passed. It does not prove that the answer is factually correct.
+
+### Provider-native response formats
+
+By default BOOTH extracts a JSON object from the model's text. If your provider returns a different string format, pass a synchronous `parse_fn` that turns that string into a dictionary containing `answer` and `confidence`:
+
+```python
+def parse_provider_response(raw: str):
+    decoded = provider_decode(raw)
+    return {"answer": decoded.answer, "confidence": decoded.confidence}
+
+result = booth.check(
+    call_llm,
+    "What is the capital of France?",
+    parse_fn=parse_provider_response,
+)
+```
+
+A few things to know:
+
+- `call_fn` must still return a `str`. A non-`str` return is a call failure and never reaches `parse_fn`.
+- `parse_fn` changes how the response is parsed, not what the model is asked. BOOTH still appends its JSON instructions to your prompt, and a failed parse gets the same JSON-style retry prompt as any other parse failure. If that does not suit your format, use `max_retries=0` and retry in your own code.
+- A parser exception or a `None` result is a parse failure, not a call failure.
+
+See [Tutorial §3.7](https://github.com/Vedantgitbot/booth/blob/main/TUTORIAL.md).
 
 ---
 
@@ -139,7 +164,7 @@ BOOTH provides three primary APIs:
 
 | Function | Execution | Purpose |
 | :--- | :--- | :--- |
-| `booth.check()` | Synchronous | Evaluates model responses for parsing, ambiguity, confidence, and an optional custom validator. Retries with reconsideration when appropriate. |
+| `booth.check()` | Synchronous | Evaluates model responses for parsing, ambiguity, confidence, and an optional custom validator. Accepts an optional `parse_fn` for provider-native response formats. Retries with reconsideration when appropriate. |
 | `booth.check_with_evidence()` | Synchronous | Evaluates a supplied answer against application-provided evidence using your comparator. Does not call an LLM itself. |
 | `booth.acheck()` | Asynchronous | Async equivalent of `check()`, supporting async model callables and async execution loops. |
 
@@ -204,7 +229,7 @@ print(result.attempts)     # Attempt objects describing the initial call and ret
 
 Failure categories include `ambiguity`, `confidence`, `validation`, and `parse_failure`.
 
-`result.call_failed` helps distinguish an unsuccessful model call—such as a network or API error—from a model response that failed the checkpoint.
+`result.call_failed` helps distinguish an unsuccessful model call, such as a network or API error, from a model response that failed the checkpoint.
 
 ---
 
@@ -223,14 +248,14 @@ Each example folder includes runnable code, recorded console output, and finding
 | Groq | `llama-3.3-70b-versatile` | `check_with_evidence()` |
 | Google Gemini | `gemini-3.5-flash-lite` | `check()`, `check_with_evidence()` |
 | Anthropic | `claude-3-5-haiku-20241022` | `check_with_evidence()` |
-| Ollama / local models | `qwen2.5-coder:7b`, `llama3.2:latest` | `check()`, `acheck()`, `check_with_evidence()` |
+| Ollama / local models | `qwen2.5-coder:7b`, `qwen2.5-coder:3b`, `llama3.2:latest` | `check()`, `acheck()`, `check_with_evidence()` |
 
 These examples cover:
 
 - Groq: evidence-grounded refund-policy QA and hallucination blocking.
 - Google Gemini: ambiguity detection, evidence grounding, and an integration issue where failed API calls initially looked like an unsure model. These can now be distinguished with `result.call_failed`.
 - Anthropic: evidence-grounded refund-policy QA against Claude.
-- Ollama: local-model checks, async execution, evidence checks, and both useful and misleading self-reported confidence.
+- Ollama: local-model checks, async execution, evidence checks, both useful and misleading self-reported confidence, and a default-format versus JSON-schema comparison on a 3B model, where schema-constrained output parsed every time but one wrong answer was still accepted.
 
 ### RAG and comparator studies
 
@@ -243,7 +268,7 @@ These are documented example results, not a general accuracy guarantee.
 
 Each example's `RESULTS.md` records what happened: what worked, what failed, and what was surprising. Negative results are intentional. A confidently wrong result from `check()` alone is as useful to document as a clean pass.
 
-To contribute an integration, see the [open call for provider examples](https://github.com/Vedantgitbot/booth/issues/2). Any provider, any model—PRs welcome.
+To contribute an integration, see the [open call for provider examples](https://github.com/Vedantgitbot/booth/issues/2). Any provider, any model, PRs welcome.
 
 ---
 
@@ -286,7 +311,7 @@ To contribute an integration, see the [open call for provider examples](https://
 | Resource | What it covers |
 | :--- | :--- |
 | [Tutorial](https://github.com/Vedantgitbot/booth/blob/main/TUTORIAL.md) | Reference for BOOTH's functions, types, properties, and methods. |
-| [Use Cases](https://github.com/Vedantgitbot/booth/blob/main/USECASES.md) | Where BOOTH fits in your architecture—and where it does not. |
+| [Use Cases](https://github.com/Vedantgitbot/booth/blob/main/USECASES.md) | Where BOOTH fits in your architecture, and where it does not. |
 | [Changelog](https://github.com/Vedantgitbot/booth/blob/main/CHANGELOG.md) | Releases, bug fixes, and API changes. |
 | [Examples](https://github.com/Vedantgitbot/booth/tree/main/examples) | Runnable integrations with documented results. |
 | [Troubleshooting](https://github.com/Vedantgitbot/booth/blob/main/TROUBLESHOOTING.md) | Known integration issues and fixes. |

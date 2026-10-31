@@ -1,12 +1,10 @@
 # BOOTH Tutorial
 
-A practical guide to BOOTH's public API and how each function, type, property, and method works.
+A practical guide to BOOTH's public API and how each function, type, property, and method works. This version documents `v0.5.7`.
 
 BOOTH is a lightweight checkpoint layer for LLM outputs. It takes an LLM call, evaluates the returned response for parsing, ambiguity, confidence, and optional application-specific validation, and gives your application a structured `BoothResult`.
 
-This tutorial focuses on **how BOOTH works and how to use its API**.
-
-Guidance about when BOOTH is appropriate, when it is unnecessary, and its broader limitations belongs in `USECASES.md`.
+This tutorial focuses on **how BOOTH works and how to use its API**. Guidance about when BOOTH is appropriate, when it is unnecessary, and its broader limitations belongs in `USECASES.md`.
 
 ---
 
@@ -15,31 +13,23 @@ Guidance about when BOOTH is appropriate, when it is unnecessary, and its broade
 Install BOOTH from PyPI:
 
 ```bash
-
 pip install boothpy
-
 ```
 
 For local development:
 
 ```bash
-
 git clone https://github.com/Vedantgitbot/booth.git
-
 cd booth
-
-pip install -e .
-
+pip install -e ".[dev,typecheck]"
 ```
 
 Check the installed version:
 
 ```python
-
 import booth
 
 print(booth.__version__)
-
 ```
 
 ---
@@ -49,67 +39,31 @@ print(booth.__version__)
 The normal BOOTH flow looks like this:
 
 ```text
-
 Your application
-
       │
-
       ▼
-
-   booth.check()
-
+ booth.check()
       │
-
       ▼
-
-    call_fn
-
+   call_fn  ──►  LLM  ──►  response (a string)
       │
-
       ▼
-
-      LLM
-
+ parse_fn (optional) or BOOTH's default JSON extraction
       │
-
-      ▼
-
- LLM response
-
-      │
-
-      ▼
-
- BOOTH parses response
-
-      │
-
-      ├── ambiguous?
-
       ├── valid format?
-
+      ├── ambiguous?
       ├── custom validator?
-
       └── confidence >= threshold?
-
       │
-
       ▼
-
   BoothResult
-
 ```
 
 The application owns the LLM client. BOOTH does not require a particular provider.
 
-For example:
-
 ```python
-
 def call_llm(prompt: str) -> str:
-
     return your_llm_client(prompt)
-
 ```
 
 BOOTH calls this function whenever it needs an LLM attempt.
@@ -121,27 +75,16 @@ BOOTH calls this function whenever it needs an LLM attempt.
 `check()` is the primary synchronous BOOTH API.
 
 ```python
-
 booth.check(
-
     call_fn,
-
     prompt,
-
     threshold=0.7,
-
     max_retries=1,
-
     on_attempt=None,
-
     *,
-
     validator=None,
-
     parse_fn=None,
-
 )
-
 ```
 
 It runs an LLM call, evaluates the response, optionally retries it, and returns a `BoothResult`.
@@ -149,29 +92,17 @@ It runs an LLM call, evaluates the response, optionally retries it, and returns 
 ## Basic example
 
 ```python
-
 import booth
 
 def call_llm(prompt: str) -> str:
-
     return your_llm_client(prompt)
 
-result = booth.check(
-
-    call_llm,
-
-    "What is the capital of France?",
-
-)
+result = booth.check(call_llm, "What is the capital of France?")
 
 if result.ok:
-
     print(result.answer)
-
 else:
-
     print(result.status)
-
 ```
 
 ---
@@ -180,60 +111,36 @@ else:
 
 `call_fn` is the function BOOTH uses to communicate with your LLM.
 
-It receives the generated prompt and must return the model's response as a
-string. If a provider uses a format that BOOTH's default JSON extraction does
-not understand, use `parse_fn` to convert that string into a structured
-dictionary.
+It receives the generated prompt and must return the model's response as a **string**. If a provider uses a format that BOOTH's default JSON extraction does not understand, keep returning that string from `call_fn` and use `parse_fn` (§3.7) to convert it into a structured dictionary.
 
 ```python
-
 def call_llm(prompt: str) -> str:
-
     response = client.chat.completions.create(...)
-
     return response.choices[0].message.content
-
 ```
 
-It can be any synchronous callable.
-
-For example, a callable object is valid:
+It can be any synchronous callable. A callable object is valid:
 
 ```python
-
 class MyClient:
-
     def __call__(self, prompt: str) -> str:
+        return self._client.chat.completions.create(...).choices[0].message.content
 
-        return self._client.chat.completions.create(
-
-            ...
-
-        ).choices[0].message.content
-
-result = booth.check(
-
-    MyClient(),
-
-    "What is the capital of France?",
-
-)
-
+result = booth.check(MyClient(), "What is the capital of France?")
 ```
 
-The important requirement is that `check()` receives a synchronous callable.
+`check()` requires a synchronous callable. An `async def` function, or an object whose `__call__` is `async def`, raises `TypeError` immediately; use `acheck()` for those (§6).
 
-As of `v0.5.2`, a non-callable `call_fn` (a plain string, an `int`, etc.) raises `TypeError` immediately, rather than crashing deep inside the retry loop the first time BOOTH tries to invoke it:
+As of `v0.5.2`, a non-callable `call_fn` raises `TypeError` immediately, rather than crashing inside the retry loop:
 
 ```python
-
 booth.check("not_callable", "What is the capital of France?")
-
 # TypeError: call_fn must be callable, got str
-
 ```
 
-If `call_fn` itself raises while BOOTH is running (a bad API key, a retired model name, a network error), BOOTH doesn't propagate it. It records the error on the attempt, retries if retries remain, and returns a normal `UNCERTAIN` result. Use `result.call_failed` (§17.1) to tell that apart from a model that simply answered badly.
+If `call_fn` itself raises while BOOTH is running (a bad API key, a retired model name, a network error), BOOTH does not propagate the exception. It records the error on the attempt, retries if retries remain, and returns a normal `UNCERTAIN` result. Use `result.call_failed` (§17.1) to tell that apart from a model that simply answered badly.
+
+If `call_fn` returns something that is not a string (`None`, a dictionary, a list), that is also a call failure, not a parse failure. If your provider gives you a dictionary, return `json.dumps(d)`, or return the raw string and decode it in `parse_fn`.
 
 ---
 
@@ -242,27 +149,16 @@ If `call_fn` itself raises while BOOTH is running (a bad API key, a retired mode
 `prompt` is the question or instruction sent through BOOTH to the model.
 
 ```python
-
-result = booth.check(
-
-    call_llm,
-
-    "Explain how TCP works.",
-
-)
-
+result = booth.check(call_llm, "Explain how TCP works.")
 ```
 
-The prompt can be any application-specific LLM instruction.
+The prompt can be any application-specific LLM instruction. BOOTH appends its own instructions asking the model for a JSON object with `ambiguous`, `interpretations`, `chosen_interpretation`, `answer`, and `confidence`.
 
-As of `v0.5.2`, a non-`str` `prompt` raises `TypeError` immediately, rather than crashing inside `_build_prompt()` with a generic `AttributeError` the first time BOOTH tries to append its confidence suffix to it:
+As of `v0.5.2`, a non-`str` `prompt` raises `TypeError` immediately:
 
 ```python
-
 booth.check(call_llm, 123)
-
 # TypeError: prompt must be a str, got int
-
 ```
 
 ---
@@ -272,34 +168,10 @@ booth.check(call_llm, 123)
 `threshold` controls the minimum confidence required for an otherwise acceptable answer.
 
 ```python
-
-result = booth.check(
-
-    call_llm,
-
-    "What is 2 + 2?",
-
-    threshold=0.8,
-
-)
-
+result = booth.check(call_llm, "What is 2 + 2?", threshold=0.8)
 ```
 
-The default threshold is:
-
-```python
-
-booth.DEFAULT_THRESHOLD
-
-```
-
-Currently:
-
-```python
-
-0.7
-
-```
+The default is `booth.DEFAULT_THRESHOLD`, currently `0.7`. A value outside `[0.0, 1.0]` raises `ValueError`. Confidence exactly equal to the threshold passes (the comparison is `>=`).
 
 The confidence value is **reported by the model itself**. BOOTH does not independently calibrate or verify that probability.
 
@@ -310,68 +182,38 @@ The confidence value is **reported by the model itself**. BOOTH does not indepen
 `max_retries` specifies how many additional attempts BOOTH may make after the initial attempt.
 
 ```python
-
-booth.check(
-
-    call_llm,
-
-    prompt,
-
-    max_retries=2,
-
-)
-
+booth.check(call_llm, prompt, max_retries=2)
 ```
-
-The number of total possible calls is:
 
 ```text
-
 max_retries=0  → 1 total attempt
-
 max_retries=1  → up to 2 total attempts
-
 max_retries=2  → up to 3 total attempts
-
 ```
 
-The default is:
+The default is `booth.DEFAULT_MAX_RETRIES` (`1`).
 
-```python
-
-booth.DEFAULT_MAX_RETRIES
-
-```
-
-`max_retries` must be a genuine `int`. A non-integer value such as `1.5` raises `TypeError` immediately, rather than failing deep inside the retry loop.
-
-Retries are used to give the model a chance to repair an unacceptable response.
+`max_retries` must be an `int`. A non-integer such as `1.5` raises `TypeError` immediately, and a negative value raises `ValueError`. (`True`/`False` are accepted and mean 1 and 0.)
 
 The retry prompt depends on what went wrong:
 
 ```text
-
 Low confidence
-
     → ask the model to reconsider
 
 Parse failure
-
     → ask the model to correct its response format
 
 Validator failure
-
     → show the validation failure and ask for a correction
 
 Call failure (call_fn raised or returned a non-string)
-
     → ask again with the original prompt
-
 ```
 
-As of `v0.5.4`, a failed call is retried with the original prompt, exactly as in the first attempt. Before that it got the "could not be parsed" prompt, even though there was no response to comment on.
+As of `v0.5.4`, a failed call is retried with the original prompt, exactly as in the first attempt.
 
-Ambiguity is different: an ambiguous attempt is returned immediately rather than automatically retried.
+Ambiguity is different: an ambiguous attempt is returned immediately rather than retried.
 
 ---
 
@@ -380,58 +222,26 @@ Ambiguity is different: an ambiguous attempt is returned immediately rather than
 `on_attempt` is an optional callback executed after each attempt.
 
 ```python
-
 def log_attempt(index, attempt):
-
     print("Attempt:", index)
-
     print("Confidence:", attempt.confidence)
-
     print("Parsed:", attempt.parse_ok)
-
     print("Ambiguous:", attempt.ambiguous)
-
     print("Validation:", attempt.passed_validation)
 
-result = booth.check(
-
-    call_llm,
-
-    "What is the capital of France?",
-
-    on_attempt=log_attempt,
-
-)
-
+result = booth.check(call_llm, "What is the capital of France?", on_attempt=log_attempt)
 ```
 
-The callback receives:
+The callback receives `index` (the attempt number, starting at 0) and `attempt` (an `Attempt` object, §13).
+
+For `check()`, `on_attempt` must be synchronous. Passing an asynchronous callback raises `TypeError`. This applies to a plain `async def` function and to an object whose `__call__` is `async def`.
+
+As of `v0.5.3`, a non-callable `on_attempt` raises `TypeError` immediately in both `check()` and `acheck()`, before any LLM call is made:
 
 ```python
-
-index
-
-attempt
-
-```
-
-`index` identifies the attempt, while `attempt` is an `Attempt` object.
-
-For `check()`, `on_attempt` must be synchronous.
-
-Passing an asynchronous callback to `check()` raises `TypeError`. This applies to a plain `async def` function and to an object whose `__call__` is itself `async def`.
-
-As of `v0.5.3`, a non-callable `on_attempt` (a string, an `int`, etc.) raises `TypeError` immediately in both `check()` and `acheck()`, before any LLM call is made:
-
-```python
-
 booth.check(call_llm, "What is the capital of France?", on_attempt="not_callable")
-
 # TypeError: on_attempt must be callable, got str
-
 ```
-
-Before that, it crashed from inside the retry loop, after `call_fn` had already run once.
 
 ---
 
@@ -442,217 +252,100 @@ Before that, it crashed from inside the retry loop, after `call_fn` had already 
 It is useful when an answer must satisfy a rule that BOOTH's normal ambiguity and confidence checks cannot express.
 
 ```python
-
 def is_valid_order_id(answer: str) -> bool:
-
     return answer.strip().upper().startswith("ORD-")
 
-result = booth.check(
-
-    call_llm,
-
-    "What is the order ID?",
-
-    validator=is_valid_order_id,
-
-)
-
+result = booth.check(call_llm, "What is the order ID?", validator=is_valid_order_id)
 ```
 
 The validator receives the answer text.
 
-As of v0.5.5, a non-callable validator raises TypeError immediately, before any LLM call is made. Passing a value such as validator=is_valid(answer) instead of the function itself is rejected upfront.
-booth.check(call_llm, "What is the order ID?", validator="not_callable")
-# TypeError: validator must be callable, got str
-### Boolean return
-
-The simplest validator returns a boolean:
+As of `v0.5.5`, a non-callable validator raises `TypeError` immediately, before any LLM call is made. Passing `validator=is_valid(answer)` instead of the function itself is rejected upfront:
 
 ```python
-
-def validate(answer: str) -> bool:
-
-    return answer.isdigit()
-
+booth.check(call_llm, "What is the order ID?", validator="not_callable")
+# TypeError: validator must be callable, got str
 ```
 
-`True` means validation passed.
+### Boolean return
 
-`False` means validation failed.
+The simplest validator returns a boolean. `True` means validation passed and `False` means it failed. If retries remain, BOOTH tells the model that validation failed and asks it to correct the answer.
 
-If retries remain, BOOTH tells the model that validation failed and asks it to correct the answer.
+```python
+def validate(answer: str) -> bool:
+    return answer.isdigit()
+```
 
 ### Returning a reason
 
-A validator can also return:
+A validator can also return `(bool, str)`:
 
 ```python
-
-(bool, str)
-
-```
-
-For example:
-
-```python
-
 def validate_amount(answer: str):
-
     if not answer.replace(".", "", 1).isdigit():
-
         return False, "The answer must be a numeric amount, e.g. 42.50"
-
     return True, ""
-
 ```
 
-The reason is included in the retry prompt.
-
-This gives the model a specific correction signal.
+The reason is included in the retry prompt, which gives the model a specific correction signal.
 
 ### `None` as the reason
 
-A validator may return:
-
-```python
-
-(True, None)
-
-```
-
-or:
-
-```python
-
-(False, None)
-
-```
-
-When validation fails and the reason is `None`, BOOTH uses a generic validation failure message.
+A validator may return `(True, None)` or `(False, None)`. When validation fails and the reason is `None`, BOOTH uses a generic failure message.
 
 ### Lists are also accepted
 
-The equivalent list form is accepted:
-
 ```python
-
 return [False, "must be numeric"]
-
 ```
 
-The supported validation-result forms are therefore:
+The supported return forms are `True`, `False`, `(True, "reason")`, `(False, "reason")`, `(True, None)`, `(False, None)`, and the same six as two-element lists. Numpy booleans are treated like native booleans. Anything else is a failed validation.
 
-```python
-
-True
-
-False
-
-(True, "specific reason")
-
-(False, "specific reason")
-
-(True, None)
-
-(False, None)
-
-[True, "specific reason"]
-
-[False, "specific reason"]
-
-[True, None]
-
-[False, None]
-
-```
-
-### Validation order
+### Evaluation order
 
 For every attempt, BOOTH evaluates the response in this order:
 
 ```text
-
-1. Ambiguity
-
-2. Parsing
-
+1. Parsing        (default extraction, or parse_fn)
+2. Ambiguity      (an ambiguous attempt is returned immediately)
 3. Validator
-
 4. Confidence
-
 ```
 
-That means validation occurs **before confidence**.
-
-A highly confident answer can therefore still fail:
-
-```python
-
-validator(answer) == False
-
-```
-
-and be retried.
+Validation therefore occurs **before confidence**. A highly confident answer can still fail the validator and be retried. The validator never runs on an attempt that failed to parse or was flagged ambiguous.
 
 ### Validator exceptions
 
 If the validator raises an exception, BOOTH treats validation as failed rather than crashing the whole check.
 
 ```python
-
 def broken_validator(answer):
-
     raise RuntimeError("oops")
 
-result = booth.check(
-
-    call_llm,
-
-    prompt,
-
-    validator=broken_validator,
-
-    max_retries=0,
-
-)
-
+result = booth.check(call_llm, prompt, validator=broken_validator, max_retries=0)
 ```
 
 The result becomes `UNCERTAIN`, and the attempt records the validation error.
 
 ### Validators are synchronous
 
-Validators must always be synchronous.
-
-This applies to both:
-
-```python
-
-booth.check()
-
-```
-
-and:
-
-```python
-
-booth.acheck()
-
-```
-
-If your application needs asynchronous work for validation, perform that work before creating the synchronous validator or otherwise resolve the required information first.
+Validators must be synchronous in both `check()` and `acheck()`. An `async def` validator produces a failed validation with a message saying so. If your validation needs asynchronous work, resolve that work before calling BOOTH.
 
 ---
 
 ## 3.7 `parse_fn`
 
-`parse_fn` is an optional synchronous parser for providers that return a
-string in a format that the default JSON extraction should not interpret. It
-receives the raw string returned by `call_fn` and must return either the
-structured dictionary that BOOTH normally extracts or `None` when parsing
-fails:
+`parse_fn` is an optional, synchronous parser added in `v0.5.7` for providers that return a string in a format the default JSON extraction should not interpret.
 
 ```python
+parse_fn(raw: str) -> Optional[dict]
+```
+
+It receives the raw string returned by `call_fn` and must return the structured dictionary that BOOTH normally extracts, or `None` when parsing fails.
+
+```python
+from typing import Optional
+
 def parse_provider_response(raw: str) -> Optional[dict]:
     provider_response = provider_decode(raw)
     return {
@@ -667,15 +360,29 @@ result = booth.check(
 )
 ```
 
-The returned dictionary follows the same rules as a normal parsed response:
-`answer` and `confidence` are required, while extra fields remain available in
-`result.parsed`. A parser exception or invalid parser result is reported as a
-normal parse failure and follows the existing retry behavior. `parse_fn` is
-synchronous for both `check()` and `acheck()`; resolve asynchronous provider
-decoding before calling BOOTH. Retry prompts are unchanged: a failed
-`parse_fn` result receives the existing JSON-style parse-failure retry prompt.
-If the provider-native response should not receive that JSON-style retry
-prompt, use `max_retries=0` unless your application intentionally wants it.
+### What changes and what does not
+
+- **Replaces extraction.** When `parse_fn` is supplied it fully replaces BOOTH's regex and `raw_decode` extraction. It is not layered on top of it.
+- **Same validation.** The returned dictionary follows the rules of a normally parsed response. `answer` and `confidence` are required, `confidence` must be a number in `[0.0, 1.0]` (a boolean is rejected), a `dict` or `list` `answer` is rejected, an empty `answer` is rejected unless the attempt is ambiguous, and `ambiguous` is coerced from a boolean or `"true"`/`"false"`. Extra fields stay available in `result.parsed`.
+- **Same pipeline.** The result feeds the existing validator, retry, confidence, ambiguity, and `BoothResult` handling.
+- **The prompt is unchanged.** BOOTH still appends its JSON instructions to your prompt. `parse_fn` changes parsing only.
+- **Parse failures, not call failures.** A parser exception, a `None` result, a non-dict result, or a dictionary that fails validation is reported as a parse failure, and `call_failed` stays `False`.
+- **Error messages.** The attempt's `error` reads `parse_fn raised <ExceptionType>: <message>` for an exception, or `parsed response was <type>, expected dict` for a non-dict result.
+- **Retry prompts are unchanged.** A failed `parse_fn` result gets the existing JSON-style parse-failure retry prompt. If that does not suit your provider-native format, use `max_retries=0` and retry in your own code.
+- **`call_fn` still returns a string.** A non-`str` return is a call failure and never reaches `parse_fn`.
+
+### Validation
+
+`parse_fn` must be callable and synchronous. In both `check()` and `acheck()`, a non-callable or `async def` `parse_fn` raises `TypeError` immediately, before any LLM call:
+
+```python
+booth.check(call_llm, "q", parse_fn="not-callable")
+# TypeError: parse_fn must be callable, got str
+```
+
+Resolve asynchronous provider decoding before calling BOOTH.
+
+`parse_fn=None` (the default) is a true no-op, and `parse_fn` is not used by `check_with_evidence()`.
 
 ---
 
@@ -683,305 +390,129 @@ prompt, use `max_retries=0` unless your application intentionally wants it.
 
 BOOTH can detect when a question has multiple possible interpretations.
 
-For example:
-
 ```python
-
-result = booth.check(
-
-    call_llm,
-
-    "What is the capital of Georgia?",
-
-)
-
+result = booth.check(call_llm, "What is the capital of Georgia?")
 ```
 
-"Georgia" could refer to:
-
-```text
-
-Georgia the country
-
-Georgia the US state
-
-```
-
-An ambiguous response has:
+"Georgia" could refer to the country or the US state. An ambiguous response has:
 
 ```python
-
 result.status == booth.AMBIGUOUS
-
 ```
 
-The interpretations are available through:
+The interpretations are available through `result.interpretations`:
 
 ```python
-
-result.interpretations
-
-```
-
-For example:
-
-```python
-
 if result.status == booth.AMBIGUOUS:
-
     print(result.interpretations)
-
 ```
 
-Ambiguous attempts are not automatically retried.
+Ambiguous attempts are not automatically retried, because reconsidering the same question does not necessarily resolve the ambiguity in the question itself. A validator is not invoked on an ambiguous attempt.
 
-The reason is that reconsidering the same question does not necessarily resolve the ambiguity in the question itself.
-
-A validator is also not invoked when the attempt is ambiguous.
+Ambiguity detection depends on the model noticing the ambiguity. Some models pick one interpretation without flagging it.
 
 ---
 
 # 5. Confidence and Retries
 
-For a non-ambiguous, successfully parsed response, BOOTH checks the model's reported confidence.
+For a non-ambiguous, successfully parsed response that passes the validator, BOOTH checks the model's reported confidence.
 
 ```python
-
-result = booth.check(
-
-    call_llm,
-
-    "What is the capital of France?",
-
-    threshold=0.8,
-
-    max_retries=1,
-
-)
-
+result = booth.check(call_llm, "What is the capital of France?", threshold=0.8, max_retries=1)
 ```
 
-If the first attempt has sufficient confidence:
-
-```python
-
-result.status == booth.ACCEPTED
-
-```
-
-If the first attempt fails the requirements but a retry produces an acceptable answer:
-
-```python
-
-result.status == booth.REPAIRED
-
-```
-
-For example:
+If the first attempt has sufficient confidence, `result.status == booth.ACCEPTED`. If the first attempt fails but a retry produces an acceptable answer, `result.status == booth.REPAIRED`.
 
 ```text
-
-Attempt 1
-
-confidence = 0.55
-
+Attempt 1: confidence 0.55
         │
-
         ▼
-
-below threshold
-
+below threshold → retry
         │
-
         ▼
-
-retry
-
+Attempt 2: confidence 0.91
         │
-
         ▼
-
-Attempt 2
-
-confidence = 0.91
-
-        │
-
-        ▼
-
 REPAIRED
-
 ```
 
 ---
 
 # 6. `acheck()`
 
-`acheck()` is the asynchronous equivalent of `check()`. It accepts the same
-`parse_fn` option; its async `call_fn` must still return a string.
+`acheck()` is the asynchronous equivalent of `check()`. It accepts the same arguments, including `parse_fn` (§3.7); its async `call_fn` must still return a string.
 
 ```python
-
-result = await booth.acheck(
-
-    call_fn,
-
-    prompt,
-
-)
-
+result = await booth.acheck(call_fn, prompt)
 ```
 
-Example:
-
 ```python
-
 import booth
 
 async def call_llm(prompt: str) -> str:
-
-    response = await async_client(...)
-
-    return response
+    return await async_client(prompt)
 
 async def ask(prompt: str):
-
-    result = await booth.acheck(
-
-        call_llm,
-
-        prompt,
-
-        threshold=0.7,
-
-        max_retries=1,
-
-    )
-
+    result = await booth.acheck(call_llm, prompt, threshold=0.7, max_retries=1)
     if result.ok:
-
         return result.answer
-
     return "Unable to provide an acceptable answer."
-
 ```
 
-The behavior is otherwise the same as `check()`, including the `v0.5.2` `prompt`/`call_fn` type validation described in §3.1/§3.2 — a non-`str` `prompt` or a non-callable `call_fn` passed to `acheck()` raises `TypeError` immediately, in the same way. A non-callable `on_attempt` (§3.5, `v0.5.3`) is rejected the same way. A non-callable `validator` is rejected the same way.
+The behavior is otherwise the same as `check()`, including the argument validation described in §3. A non-`str` `prompt`, a non-callable `call_fn`, a non-callable `on_attempt`, a non-callable `validator`, and a non-callable or `async def` `parse_fn` all raise `TypeError` immediately.
 
 ---
 
 ## 6.1 Async `call_fn`
 
-`acheck()` expects an asynchronous callable.
-
-A normal async function works:
+`acheck()` requires an asynchronous callable.
 
 ```python
-
 async def call_llm(prompt: str) -> str:
-
     return await async_client(prompt)
-
 ```
 
-A `functools.partial` wrapping an async function also works:
+A `functools.partial` wrapping an async function works:
 
 ```python
-
 import functools
 
 async def call_llm(prompt: str, system: str = "") -> str:
-
     ...
 
-wrapped = functools.partial(
-
-    call_llm,
-
-    system="be concise",
-
-)
-
-result = await booth.acheck(
-
-    wrapped,
-
-    "What is the capital of France?",
-
-)
-
+wrapped = functools.partial(call_llm, system="be concise")
+result = await booth.acheck(wrapped, "What is the capital of France?")
 ```
 
-An object whose `__call__` is asynchronous also works:
+An object whose `__call__` is `async def` works:
 
 ```python
-
 class MyAsyncClient:
-
     async def __call__(self, prompt: str) -> str:
-
         return await self._client.chat.completions.create(...)
 
-result = await booth.acheck(
-
-    MyAsyncClient(),
-
-    "What is the capital of France?",
-
-)
-
+result = await booth.acheck(MyAsyncClient(), "What is the capital of France?")
 ```
 
-A synchronous callable whose `__call__` happens to return an awaitable is intentionally not treated as an async callable.
+A synchronous callable whose `__call__` happens to return an awaitable is intentionally not treated as async. Use a real `async def`.
 
-Use an actual `async def` function or an object with:
-
-```python
-
-async def __call__(...)
-
-```
-
-instead.
-
-Conversely, `check()` expects a synchronous `call_fn`. Passing an `async def` function, or an object whose `__call__` is `async def`, raises `TypeError` immediately rather than returning an unawaited coroutine.
+Passing a synchronous `call_fn` to `acheck()` raises `TypeError`, and passing an async one to `check()` does as well, rather than returning an unawaited coroutine.
 
 ---
 
 ## 6.2 Async `on_attempt`
 
-With `acheck()`, `on_attempt` may be either synchronous or asynchronous.
-
-An async function works:
+With `acheck()`, `on_attempt` may be synchronous or asynchronous.
 
 ```python
-
 async def log_attempt(index, attempt):
-
     await save_attempt(index, attempt)
 
-```
-
-An object with an async `__call__` also works:
-
-```python
-
 class AsyncLogger:
-
     async def __call__(self, index, attempt):
-
         await self._flush_to_queue(index, attempt)
 
-result = await booth.acheck(
-
-    call_llm,
-
-    "What is the capital of France?",
-
-    on_attempt=AsyncLogger(),
-
-)
-
+result = await booth.acheck(call_llm, "What is the capital of France?", on_attempt=AsyncLogger())
 ```
 
 BOOTH awaits recognized asynchronous callbacks.
@@ -993,52 +524,25 @@ BOOTH awaits recognized asynchronous callbacks.
 `check_with_evidence()` is BOOTH's evidence-agreement checkpoint.
 
 ```python
-
 booth.check_with_evidence(
-
     answer,
-
     evidence,
-
     compare_fn,
-
     evidence_threshold=DEFAULT_THRESHOLD,
-
 )
-
 ```
 
-Unlike `check()`, this function does not make an LLM call.
-
-Your application supplies:
-
-1. The answer to check
-
-2. The evidence
-
-3. A comparison function
-
-Example:
+Unlike `check()`, this function does not make an LLM call. Your application supplies the answer, the evidence, and a comparison function.
 
 ```python
-
 result = booth.check_with_evidence(
-
     answer="Paris is the capital of France.",
-
-    evidence=[
-
-        "France's capital city is Paris."
-
-    ],
-
+    evidence=["France's capital city is Paris."],
     compare_fn=compare_answer_to_evidence,
-
 )
-
 ```
 
-As of `v0.5.1`, every non-`ACCEPTED` result from `check_with_evidence()` also carries a specific `reason` code and a human-readable `detail` string explaining exactly which of five distinct causes produced it — see §7.8 below. Ordinary `check()`/`acheck()` results are unaffected: their `reason` and `detail` are always `None`.
+As of `v0.5.1`, every non-`ACCEPTED` result also carries a specific `reason` code and a human-readable `detail` string (§7.8). `check()` and `acheck()` results always have `reason` and `detail` set to `None`.
 
 ---
 
@@ -1046,51 +550,23 @@ As of `v0.5.1`, every non-`ACCEPTED` result from `check_with_evidence()` also ca
 
 `answer` is the answer that you want to compare against the supplied evidence.
 
-```python
-
-answer = "Paris is the capital of France."
-
-```
-
-An empty or whitespace-only answer is treated as missing.
-
-In that case BOOTH returns:
+An empty, whitespace-only, or `None` answer is treated as missing. BOOTH returns:
 
 ```python
-
 result.status == booth.UNCERTAIN
-
 result.reason == booth.EMPTY_ANSWER
-
+result.answer is None
+result.detail == "answer was empty or whitespace-only"
 ```
 
-and does not call `compare_fn`.
+and does not call `compare_fn`. (As of `v0.5.2`, `.answer` is `None` for the whitespace-only case as well as the empty-string case.)
 
-`answer=None` is treated the same way — a missing answer, `UNCERTAIN` with `reason=booth.EMPTY_ANSWER`, no call to `compare_fn`. Any other non-`str` value (an `int`, a `list`, etc.) is a genuine caller mistake rather than a "missing" case, and as of `v0.4.9` raises `TypeError` immediately instead of crashing later with a confusing `AttributeError`:
+Any other non-`str` value (an `int`, a `list`) is a caller mistake and raises `TypeError` immediately:
 
 ```python
-
 booth.check_with_evidence(answer=123, evidence=["e"], compare_fn=my_compare_fn)
-
 # TypeError: answer must be a str, got int
-
 ```
-
-As of `v0.5.2`, `.answer` on this result is `None` for both the empty-string and whitespace-only cases:
-
-```python
-
-result = booth.check_with_evidence(answer="   ", evidence=["e"], compare_fn=my_compare_fn)
-
-result.answer   # None
-
-result.reason   # booth.EMPTY_ANSWER
-
-result.detail   # "answer was empty or whitespace-only"
-
-```
-
-Previously, a whitespace-only string like `"   "` was left as the literal string in `.answer` instead of being normalized the way the empty-string case (`answer=""`) already was — two inputs producing the identical `status`/`reason`/`detail` triple ended up with different `.answer` values. Both cases now normalize to `None`, matching the `answer=None` case above.
 
 ---
 
@@ -1098,151 +574,65 @@ Previously, a whitespace-only string like `"   "` was left as the literal string
 
 `evidence` is the evidence your application has already retrieved.
 
-For example:
-
 ```python
-
 evidence = [
-
     "Either party may terminate this Agreement upon ninety (90) days written notice."
-
 ]
-
 ```
 
-BOOTH does not retrieve the evidence itself.
+BOOTH does not retrieve the evidence itself and does not determine whether it is correct.
 
-It also does not determine whether the evidence is correct.
+An empty evidence sequence is rejected with `status == UNCERTAIN` and `reason == NO_EVIDENCE`.
 
-The evidence sequence must not be empty:
+As of `v0.5.5`, one-shot iterables (generators, iterators, `map`, `filter`) are accepted. BOOTH converts them to a list once, before the empty check, and `compare_fn` receives that list. As of `v0.5.6`, the type hint for `evidence` is `Iterable[str]`.
 
-```python
-
-[]
-
-```
-
-is rejected, with:
-
-```python
-
-result.status == booth.UNCERTAIN
-
-result.reason == booth.NO_EVIDENCE
-
-```
-
-The content of the evidence is otherwise the application's responsibility.
-
-A generator is also accepted: BOOTH can consume one-shot evidence iterables without requiring you to materialize them as a list first. As of v0.5.6, the public type hint for evidence is Iterable[str].
-
-`evidence` does not have to be a plain `list`. Anything with a length — a `tuple`, or a `numpy` array of strings, for example — works the same way. Prior to `v0.4.9`, a multi-element `numpy` array specifically crashed the emptiness check with `ValueError: the truth value of an array is ambiguous`, rather than being evaluated normally; that's fixed.
+Anything with a length (a list, tuple, set, or numpy array) is passed to `compare_fn` as the same object. An exception raised inside your own generator while it is being converted propagates to the caller; it is not reported as `COMPARE_FAILED`.
 
 ---
 
 ## 7.3 `compare_fn`
 
-`compare_fn` is the function that decides whether the answer agrees with the evidence.
+`compare_fn` decides whether the answer agrees with the evidence.
 
 ```python
-
 def compare_answer_to_evidence(answer, evidence):
-
     ...
-
 ```
 
-It receives:
+It receives `answer` and `evidence`. The comparison logic belongs to your application. For example, a deliberately simple comparator:
 
 ```python
-
-answer
-
-evidence
-
-```
-
-The comparison logic belongs to your application.
-
-For example:
-
-```python
-
 def compare_answer_to_evidence(answer, evidence):
-
     return "90" in answer
-
 ```
 
 A real application would normally use a more appropriate comparison method.
 
-`compare_fn` must be synchronous. An `async def compare_fn`, or a synchronous function that internally calls an async comparator and returns the resulting coroutine without awaiting it, is rejected with `TypeError` as of `v0.4.9` — previously this either crashed confusingly or silently fell through to `UNCERTAIN`, and either way leaked a "coroutine was never awaited" warning. This mirrors the treatment `validator` already gets in `check()`/`acheck()`: if your comparison needs to await something, resolve it before calling `check_with_evidence()` and pass a plain sync function.
+`compare_fn` must be synchronous. An `async def compare_fn`, or a synchronous function that returns an un-awaited coroutine, is rejected with `TypeError` (as of `v0.4.9`). If your comparison needs to await something, resolve it before calling `check_with_evidence()`.
 
-If `compare_fn` raises any other exception, BOOTH does not propagate it. It's caught and turned into:
+If `compare_fn` raises any other exception, BOOTH does not propagate it:
 
 ```python
-
 result.status == booth.UNCERTAIN
-
 result.reason == booth.COMPARE_FAILED
-
-result.checker_failed == True
-
+result.checker_failed is True
 ```
 
-with `result.detail` containing the exception type and a truncated message, e.g. `"ValueError: division by zero"`. As of `v0.5.1`, this is the fault of the comparator, not the answer — `checker_failed` is `True` here so your application can distinguish "the checker itself broke" from "the answer just didn't hold up" without string-matching `detail`. See §7.8.
+`result.detail` contains the exception type and a message truncated to 200 characters. See §7.8.
 
 ---
 
 ## 7.4 Boolean comparison
 
-`compare_fn` may return a boolean:
+`compare_fn` may return a boolean. `True` produces `ACCEPTED`. `False` produces:
 
 ```python
-
-True
-
-```
-
-produces:
-
-```python
-
-ACCEPTED
-
-```
-
-while:
-
-```python
-
-False
-
-```
-
-produces:
-
-```python
-
-BLOCKED
-
+result.status == booth.BLOCKED
 result.reason == booth.EVIDENCE_DISAGREES
-
-```
-
-Boolean results are treated as strict pass/fail results. This includes `numpy.bool_`, recognized the same way as a native `bool`.
-
-`evidence_threshold` is not applied to boolean results.
-
-As of `v0.5.2`, a `False` result produces:
-
-```python
-
 result.detail == "compare_fn returned False"
-
 ```
 
-Previously, this branch's `detail` always read `"score X below evidence_threshold Y"` — the same wording used by the numeric/score path in §7.5 below — even though no threshold comparison actually happens for a boolean `compare_fn`. That was misleading: `result.detail` is documented (§7.8) as "the thing to log or show a human," and the old wording implied a threshold decision that never occurred. The boolean path and the numeric path now produce distinct `detail` wording, matching which comparison actually ran.
+Boolean results are strict pass/fail. This includes `numpy.bool_`. `evidence_threshold` is not applied to boolean results, which is why the `detail` for a boolean `False` does not mention a threshold (as of `v0.5.2`).
 
 ---
 
@@ -1251,283 +641,135 @@ Previously, this branch's `detail` always read `"score X below evidence_threshol
 `compare_fn` can instead return a score between `0.0` and `1.0`.
 
 ```python
-
 def compare_answer_to_evidence(answer, evidence):
-
     return 0.87
 
-```
-
-Then:
-
-```python
-
 result = booth.check_with_evidence(
-
-    answer,
-
-    evidence,
-
-    compare_answer_to_evidence,
-
-    evidence_threshold=0.8,
-
+    answer, evidence, compare_answer_to_evidence, evidence_threshold=0.8
 )
-
+# 0.87 >= 0.8  →  ACCEPTED
 ```
 
-produces:
+A score below the threshold produces `BLOCKED` with `reason == EVIDENCE_DISAGREES` and a `detail` such as `"score 0.62 below evidence_threshold 0.8"`.
+
+A value that can be converted to a float, such as the string `"0.8"`, is accepted as a score. A return value that cannot be used as a score (non-numeric, or numeric but outside `[0.0, 1.0]`) is a different failure from a genuine disagreement:
 
 ```python
-
-result.status == booth.ACCEPTED
-
-```
-
-because:
-
-```text
-
-0.87 >= 0.8
-
-```
-
-A score below the threshold produces:
-
-```python
-
-BLOCKED
-
-result.reason == booth.EVIDENCE_DISAGREES
-
-result.detail  # e.g. "score 0.62 below evidence_threshold 0.8"
-
-```
-
-This numeric-score `detail` wording is unchanged by `v0.5.2` — only the boolean path's wording changed (§7.4).
-
-A return value that can't be used as a score at all — non-numeric, or numeric but outside `[0.0, 1.0]` — is a different failure from a genuine disagreement, and gets its own reason:
-
-```python
-
 result.status == booth.UNCERTAIN
-
 result.reason == booth.INVALID_SCORE
-
-result.checker_failed == True
-
+result.checker_failed is True
 ```
 
-`evidence_threshold` must be a real number (`int` or `float`). As of `v0.4.9`, a `str`, `None`, or `bool` value raises `TypeError` immediately — the same treatment `max_retries` already got in `v0.4.8` — rather than failing later with a confusing generic comparison error. `bool` is rejected here specifically (unlike `max_retries`, where `True`/`False` are harmlessly treated as 1/0): a threshold silently becoming "require a perfect 1.0 score" or "accept anything" is far more likely to be a caller mistake than an intentional choice.
+`evidence_threshold` must be a real number. A `str`, `None`, or `bool` raises `TypeError` immediately, and a value outside `[0.0, 1.0]` raises `ValueError`. `bool` is rejected deliberately: a threshold silently becoming "require a perfect score" or "accept anything" is far more likely to be a mistake than a choice.
 
 ```python
-
 booth.check_with_evidence(answer, evidence, compare_fn, evidence_threshold="0.8")
-
 # TypeError: evidence_threshold must be a real number, got str
-
 ```
 
 ---
 
 ## 7.6 Evidence result
 
-The comparison score or boolean result is available through:
-
-```python
-
-result.evidence_agreement
-
-```
-
-For example:
-
-```python
-
-print(result.evidence_agreement)
-
-```
-
-For normal `check()` and `acheck()` results, this field is:
-
-```python
-
-None
-
-```
+The comparison score or boolean result is available through `result.evidence_agreement`. A boolean `True` is `1.0` and a boolean `False` is `0.0`. For `check()` and `acheck()` results this field is `None`.
 
 ---
 
 ## 7.7 What `check_with_evidence()` does not do
 
-`check_with_evidence()`:
-
 ```text
-
 does not make LLM calls
-
 does not make network calls
-
 does not retrieve evidence
-
 does not retry
-
 does not use a validator
-
+does not use parse_fn
 does not produce parsed LLM JSON
-
 ```
 
-It is simply an evidence comparison gate.
+It is an evidence comparison gate.
 
 ---
 
 ## 7.8 `reason`, `detail`, and `checker_failed`
 
-Before `v0.5.1`, `check_with_evidence()` returned `UNCERTAIN` from a single construction site reused for four unrelated causes — a blank answer, empty evidence, a crashing `compare_fn`, and a malformed score — with `status` alone giving no way to tell them apart. `reason` fixes that.
+Before `v0.5.1`, `check_with_evidence()` returned `UNCERTAIN` for four unrelated causes with no way to tell them apart. `reason` fixes that.
 
 `reason` is one of five fixed string codes, set only by `check_with_evidence()`:
 
-| Code                  | Status       | Meaning                                                          | `checker_failed` |
+| Code | Status | Meaning | `checker_failed` |
+| --- | --- | --- | --- |
+| `EMPTY_ANSWER` | `UNCERTAIN` | `answer` was empty, whitespace-only, or `None` | `False` |
+| `NO_EVIDENCE` | `UNCERTAIN` | `evidence` was an empty sequence | `False` |
+| `COMPARE_FAILED` | `UNCERTAIN` | `compare_fn` raised an exception | `True` |
+| `INVALID_SCORE` | `UNCERTAIN` | `compare_fn` returned something unusable as a score | `True` |
+| `EVIDENCE_DISAGREES` | `BLOCKED` | a real comparison ran, and the answer was rejected | `False` |
 
-| --------------------- | ------------ | ----------------------------------------------------------------- | ----------------- |
-
-| `EMPTY_ANSWER`         | `UNCERTAIN`  | `answer` was empty, whitespace-only, or `None`                    | `False`           |
-
-| `NO_EVIDENCE`          | `UNCERTAIN`  | `evidence` was an empty sequence                                  | `False`           |
-
-| `COMPARE_FAILED`       | `UNCERTAIN`  | `compare_fn` raised an exception                                  | `True`            |
-
-| `INVALID_SCORE`        | `UNCERTAIN`  | `compare_fn` returned something unusable as a score               | `True`            |
-
-| `EVIDENCE_DISAGREES`   | `BLOCKED`    | a real comparison ran, and the answer scored below the threshold  | `False`           |
-
-`result.detail` is a free-text string with the specifics of that particular case — for example, which exception type and message caused a `COMPARE_FAILED`, or what the score and threshold were for `EVIDENCE_DISAGREES` (or, as of `v0.5.2`, `"compare_fn returned False"` for a boolean `EVIDENCE_DISAGREES` — see §7.4). Treat `reason` as the thing to branch on programmatically, and `detail` as the thing to log or show a human — `detail`'s exact wording isn't part of the stable API.
+`result.detail` is free text with the specifics of the case. Treat `reason` as the thing to branch on programmatically and `detail` as the thing to log or show a human. The exact wording of `detail` is not part of the stable API.
 
 `checker_failed` is a computed property:
 
 ```python
-
 @property
-
 def checker_failed(self) -> bool:
-
     return self.reason in (COMPARE_FAILED, INVALID_SCORE)
-
 ```
 
-It's `True` only when the *checker itself* is at fault — a broken `compare_fn`, or one returning garbage — as opposed to the caller's input being incomplete (`EMPTY_ANSWER`/`NO_EVIDENCE`) or the comparison producing a real, meaningful verdict (`EVIDENCE_DISAGREES`). This is a useful triage signal: `checker_failed=True` usually means "alert an engineer, your comparator is broken," while the other reasons usually mean "this specific input/answer didn't check out."
+It is `True` only when the checker itself is at fault (a broken `compare_fn`, or one returning garbage), as opposed to incomplete input or a real disagreement. `checker_failed=True` usually means "alert an engineer", while the other reasons usually mean "this input or answer didn't check out". It does not detect a comparator that runs without error but has bad logic.
 
-`check()` and `acheck()` results are unaffected. `reason` and `detail` default to `None` and `checker_failed` is always `False` on those results — no code runs to set them, it's just the dataclass default.
-
-Example: branching on `reason` instead of trying to interpret `status` alone.
+`check()` and `acheck()` results are unaffected: `reason` and `detail` are `None` and `checker_failed` is `False`.
 
 ```python
-
 result = booth.check_with_evidence(
-
     answer=llm_answer,
-
     evidence=retrieved_docs,
-
     compare_fn=my_compare_fn,
-
 )
 
 if result.ok:
-
     use(result.answer)
-
 elif result.checker_failed:
-
     log.error(f"compare_fn broke: {result.detail}")
-
     escalate_to_engineer(result)
-
 elif result.reason == booth.EVIDENCE_DISAGREES:
-
     log.info(f"Answer didn't match evidence: {result.detail}")
-
     escalate_to_human_review(result)
-
 elif result.reason in (booth.EMPTY_ANSWER, booth.NO_EVIDENCE):
-
     log.warning(f"Incomplete input: {result.detail}")
-
     retry_upstream_pipeline()
-
 ```
 
 Import the codes from the package root:
 
 ```python
-
-from booth import (
-
-    EMPTY_ANSWER,
-
-    NO_EVIDENCE,
-
-    EVIDENCE_DISAGREES,
-
-    COMPARE_FAILED,
-
-    INVALID_SCORE,
-
-)
-
+from booth import EMPTY_ANSWER, NO_EVIDENCE, EVIDENCE_DISAGREES, COMPARE_FAILED, INVALID_SCORE
 ```
 
 ---
 
 # 8. `BoothResult`
 
-`check()`, `acheck()`, and `check_with_evidence()` return a:
-
-```python
-
-BoothResult
-
-```
-
-A result provides structured information about what happened.
+`check()`, `acheck()`, and `check_with_evidence()` return a `BoothResult`.
 
 The main fields are:
 
 ```python
-
 result.answer
-
 result.status
-
 result.confidence
-
 result.evidence_agreement
-
 result.attempts
-
 result.n_attempts
-
 result.ok
-
 result.ambiguous
-
 result.interpretations
-
 result.all_parse_failed
-
 result.call_failed
-
 result.method
-
 result.parsed
-
 result.reason
-
 result.detail
-
 result.checker_failed
-
 ```
 
 ---
@@ -1536,69 +778,25 @@ result.checker_failed
 
 The resulting answer.
 
-```python
+It may be `None` when no usable answer was obtained. This includes the case where the model returned a `dict` or `list` for `answer` instead of a scalar: BOOTH rejects that as a schema violation rather than stringifying it into a misleading result.
 
-print(result.answer)
+A numeric or boolean `answer` (for example `{"answer": 42}`) is not rejected. Since `v0.4.9` it is coerced to its string form (`"42"`), while `result.parsed` keeps the original value.
 
-```
+An empty or whitespace-only `answer` is rejected (as of `v0.4.9`) regardless of how high the reported confidence is. The one exception is an `AMBIGUOUS` attempt: the model may legitimately leave `answer` blank while `interpretations` carries the content.
 
-It may be:
-
-```python
-
-None
-
-```
-
-when no usable answer was obtained. This includes the case where the model returned a dict or list `answer` field instead of a scalar value — BOOTH rejects that as a schema violation rather than silently stringifying it into a misleading result.
-
-A numeric or boolean `answer` (for example `{"answer": 42}`) is not rejected the same way. Since `v0.4.9`, these are coerced to their string form (`"42"`) for `result.answer`, the same treatment `confidence` already gets in the other direction — only `dict`/`list` values are schema violations.
-
-An empty or whitespace-only `answer` (for example `{"answer": ""}` or `{"answer": "   "}`) is also rejected as of `v0.4.9`, regardless of how high the reported confidence is — a blank answer at high confidence was previously accepted as `ACCEPTED`. The one exception is an `AMBIGUOUS` attempt: the model may legitimately leave `answer` blank while relying on `interpretations` to carry the real content, so this guard does not apply when `ambiguous` is `true`.
-
-This is the `check()`/`acheck()` parsing path. The equivalent normalization for `check_with_evidence()`'s `answer` argument is described in §7.1.
+On a rejected result (`AMBIGUOUS`, `UNCERTAIN`, `BLOCKED`), `.answer` may still hold the last parsed answer, for debugging. Use `result.ok` or `unwrap()` before trusting it.
 
 ---
 
 ## 8.2 `status`
 
-`status` tells you the final BOOTH outcome.
+`status` is the final BOOTH outcome: `booth.ACCEPTED`, `booth.REPAIRED`, `booth.AMBIGUOUS`, `booth.UNCERTAIN`, or `booth.BLOCKED`.
 
-Possible values are:
-
-```python
-
-booth.ACCEPTED
-
-booth.REPAIRED
-
-booth.AMBIGUOUS
-
-booth.UNCERTAIN
-
-booth.BLOCKED
-
-```
-
-### `ACCEPTED`
-
-The answer passed the relevant checks on the successful attempt.
-
-### `REPAIRED`
-
-An earlier attempt failed, but a retry produced an acceptable result.
-
-### `AMBIGUOUS`
-
-The model identified multiple interpretations of the question.
-
-### `UNCERTAIN`
-
-BOOTH could not obtain an acceptable result. From `check_with_evidence()`, check `result.reason` (§7.8) to see which of `EMPTY_ANSWER`, `NO_EVIDENCE`, `COMPARE_FAILED`, or `INVALID_SCORE` produced it.
-
-### `BLOCKED`
-
-The answer failed the evidence comparison performed by `check_with_evidence()`. `result.reason` is `EVIDENCE_DISAGREES` here.
+- **`ACCEPTED`**: the answer passed the relevant checks on the first attempt.
+- **`REPAIRED`**: an earlier attempt failed, but a retry produced an acceptable result.
+- **`AMBIGUOUS`**: the model identified multiple interpretations of the question.
+- **`UNCERTAIN`**: BOOTH could not obtain an acceptable result. From `check_with_evidence()`, check `result.reason` (§7.8). From `check()`, check `result.method` and `result.call_failed`.
+- **`BLOCKED`**: the answer failed the evidence comparison performed by `check_with_evidence()`. `result.reason` is `EVIDENCE_DISAGREES`.
 
 ---
 
@@ -1607,30 +805,11 @@ The answer failed the evidence comparison performed by `check_with_evidence()`. 
 `ok` is the convenient success check.
 
 ```python
-
 if result.ok:
-
     print(result.answer)
-
 ```
 
-It is equivalent to checking whether the status represents an accepted answer.
-
-`ok` is `True` only when:
-
-```python
-
-result.status in (
-
-    booth.ACCEPTED,
-
-    booth.REPAIRED,
-
-)
-
-```
-
-For other statuses it is `False`.
+`ok` is `True` only when `result.status` is `ACCEPTED` or `REPAIRED`.
 
 ---
 
@@ -1639,769 +818,295 @@ For other statuses it is `False`.
 `unwrap()` is a stricter accessor added in `v0.5.0`. It returns `.answer` as a plain `str` when the result is ok, and raises `BoothRejected` otherwise:
 
 ```python
-
 try:
-
     answer = result.unwrap()
-
 except booth.BoothRejected as e:
-
     print(f"Rejected: {e.result.status} ({e.result.method})")
-
     answer = None
-
 ```
 
-It uses exactly the same predicate as `.ok` — internally, `unwrap()` literally checks `self.ok` — so the two can never disagree.
+It uses the same predicate as `.ok`, so the two cannot disagree. It does not change `.answer`, which stays populated on rejected results for debugging.
 
-This does **not** change `.answer` itself. `.answer` stays populated on rejected results (`AMBIGUOUS`, `UNCERTAIN`, `BLOCKED`) exactly as before, intentionally, so you can still inspect what got rejected for debugging or logging. `unwrap()` is a stricter, opt-in accessor layered on top of that existing field, not a replacement for it.
-
-The main benefit is ergonomic: `.answer` is typed `Optional[str]`, so a type checker forces `None`-handling at every call site even though it can't tell "populated but rejected" from "genuinely missing." `unwrap()` returns a plain `str` — no `Optional` handling needed — because rejection becomes an exception instead of a value you might forget to check.
+The benefit is ergonomic: `.answer` is typed `Optional[str]`, so a type checker forces `None` handling at every call site. `unwrap()` returns a plain `str` because rejection becomes an exception instead of a value you might forget to check.
 
 ### `BoothRejected`
 
-`BoothRejected` is the exception `unwrap()` raises. It carries the full `BoothResult` as `.result`, so you don't lose any diagnostic information by catching it:
+`BoothRejected` carries the full `BoothResult` as `.result`, so nothing diagnostic is lost:
 
 ```python
-
 try:
-
     answer = result.unwrap()
-
 except booth.BoothRejected as e:
-
-    print(e.result.status)       # e.g. "UNCERTAIN"
-
-    print(e.result.method)       # e.g. "parse_failure"
-
-    print(e.result.reason)       # e.g. "EMPTY_ANSWER", from check_with_evidence()
-
-    print(e.result.attempts)     # full attempt history, still there
-
+    print(e.result.status)     # e.g. "UNCERTAIN"
+    print(e.result.method)     # e.g. "parse_failure"
+    print(e.result.reason)     # e.g. "EMPTY_ANSWER", from check_with_evidence()
+    print(e.result.attempts)   # full attempt history
 ```
 
-The exception's own string message (`str(e)`) intentionally does **not** include the raw rejected answer text — exception messages routinely end up in logs, and BOOTH doesn't assume you want a rejected answer logged just because someone called `unwrap()`. If you need the rejected text itself, read it explicitly from `e.result.answer`.
+The exception's message (`str(e)`) intentionally does not include the rejected answer text, because exception messages tend to end up in logs. Read the text explicitly from `e.result.answer` if you need it.
 
 ## 9.2 `BoothResult.unwrap_or()`
 
 `unwrap_or(default)` behaves like `unwrap()` but returns `default` instead of raising:
 
 ```python
-
 answer = result.unwrap_or("Sorry, I don't have a reliable answer for that.")
-
 ```
-
-Useful when a plain fallback value is simpler than a `try`/`except` at the call site.
 
 ## 9.3 `BoothResult.checker_failed`
 
-`checker_failed` is a computed property, `True` only on a `check_with_evidence()` result whose `reason` is `COMPARE_FAILED` or `INVALID_SCORE` — i.e. the comparator itself broke, rather than the answer failing a real comparison. Always `False` on `check()`/`acheck()` results. See §7.8 for the full breakdown and a triage example.
+`checker_failed` is `True` only on a `check_with_evidence()` result whose `reason` is `COMPARE_FAILED` or `INVALID_SCORE`. It is always `False` on `check()` and `acheck()` results. See §7.8.
 
 ```python
-
 if result.checker_failed:
-
     alert_engineering(result.detail)
-
 ```
 
 ---
 
 # 10. `BoothResult.confidence`
 
-For:
-
-```python
-
-check()
-
-acheck()
-
-```
-
-`confidence` contains the model-reported confidence.
-
-```python
-
-print(result.confidence)
-
-```
-
-For:
-
-```python
-
-check_with_evidence()
-
-```
-
-it contains the comparison score when one is available.
+For `check()` and `acheck()`, `confidence` is the model-reported confidence. For `check_with_evidence()` it is the comparison score when one is available.
 
 ---
 
 # 11. `BoothResult.evidence_agreement`
 
-This field contains the result produced by the evidence comparison.
-
-```python
-
-print(result.evidence_agreement)
-
-```
-
-For normal LLM checks:
-
-```python
-
-result.evidence_agreement is None
-
-```
-
-For evidence checks, it contains the comparison result when available.
+The result produced by the evidence comparison. It is `None` for `check()` and `acheck()` results.
 
 ---
 
 # 12. `BoothResult.attempts`
 
-`attempts` contains every LLM attempt made during `check()` or `acheck()`.
+`attempts` contains every LLM attempt made during `check()` or `acheck()`, as `Attempt` objects.
 
 ```python
-
 for attempt in result.attempts:
-
     print(attempt)
-
 ```
-
-Each item is an:
-
-```python
-
-Attempt
-
-```
-
-object.
 
 An attempt contains:
 
 ```python
-
 attempt.raw_text
-
 attempt.answer
-
 attempt.confidence
-
 attempt.parse_ok
-
 attempt.error
-
 attempt.ambiguous
-
 attempt.interpretations
-
 attempt.chosen_interpretation
-
 attempt.passed_validation
-
 attempt.validation_error
-
 attempt.parsed
-
 attempt.call_failed
-
 ```
 
-`check_with_evidence()` results always have `attempts == []` — that path never populates `Attempt` objects at all, which is exactly why `result.reason`/`result.detail` (§7.8) exist: they're the equivalent diagnostic surface for a path that has no attempt history to inspect.
+`check_with_evidence()` results always have `attempts == []`. That is why `result.reason` and `result.detail` (§7.8) exist: they are the diagnostic surface for a path with no attempt history.
 
 ---
 
 # 13. `Attempt`
 
-`Attempt` represents one individual LLM attempt.
-
-It is useful when you need to inspect what happened across retries.
-
-For example:
+`Attempt` represents one individual LLM attempt. It is useful when you need to inspect what happened across retries.
 
 ```python
-
 for index, attempt in enumerate(result.attempts):
-
     print("Attempt:", index)
-
     print("Answer:", attempt.answer)
-
     print("Confidence:", attempt.confidence)
-
     print("Parsed:", attempt.parse_ok)
-
 ```
 
 ## `Attempt.raw_text`
 
-The raw text returned by the model.
-
-```python
-
-attempt.raw_text
-
-```
-
-This lets you inspect the original response.
-
----
+The raw text returned by the model (or, for a raised `call_fn`, `"<ExceptionType>: <message>"`; for a non-string return, its `repr`).
 
 ## `Attempt.answer`
 
 The normalized answer extracted from the parsed response.
 
-```python
-
-attempt.answer
-
-```
-
----
-
 ## `Attempt.confidence`
 
 The normalized confidence value for that attempt.
-
-```python
-
-attempt.confidence
-
-```
-
----
 
 ## `Attempt.parse_ok`
 
 Whether BOOTH successfully parsed the attempt.
 
 ```python
-
 if not attempt.parse_ok:
-
     print("The attempt failed to parse.")
-
 ```
 
-A call whose `call_fn` succeeded but returned a non-string type (for example
-`None`, a dictionary, or a list) is also recorded here as a failed attempt
-rather than raising — check `attempt.error` for the reason.
-
----
+A call whose `call_fn` succeeded but returned a non-string (for example `None`, a dictionary, or a list) is also recorded as a failed attempt rather than raising. Check `attempt.error` for the reason.
 
 ## `Attempt.error`
 
 Contains parsing or other attempt-level error information when applicable.
 
-```python
-
-print(attempt.error)
-
-```
-
-As of `v0.4.9`, a parse failure always carries a specific, human-readable reason here (for example `"'confidence' 17.0 is out of the [0.0, 1.0] range"` or `"'answer' was empty or whitespace-only"`) instead of leaving `error` as `None`. `call_fn` exceptions and non-string `call_fn` returns already populated this field in earlier versions; this extends the same discipline to every parse-rejection path inside `_parse_response()`.
-
----
+As of `v0.4.9`, a parse failure always carries a specific, human-readable reason (for example `"'confidence' 17.0 is out of the [0.0, 1.0] range"` or `"'answer' was empty or whitespace-only"`). `call_fn` exceptions and non-string returns also populate it. When `parse_fn` is used, a parser exception is recorded as `parse_fn raised <ExceptionType>: <message>`, and a non-dict result as `parsed response was <type>, expected dict`.
 
 ## `Attempt.call_failed`
 
-Added in `v0.5.4`. `True` when `call_fn` raised an exception, or returned
-something other than a string, so there was no response to parse.
+Added in `v0.5.4`. `True` when `call_fn` raised an exception, or returned something other than a string, so there was no response to parse.
 
 ```python
-
 if attempt.call_failed:
-
     print("The call itself failed:", attempt.error)
-
 ```
 
-A garbage response is not a call failure: `parse_ok` is `False` but `call_failed` is also `False`. When `call_failed` is `True`, `parse_ok` is always `False` too, since there was nothing to parse.
-
-For the result-level version of this flag, see §17.1.
-
----
+A garbage response is not a call failure: `parse_ok` is `False` but `call_failed` is also `False`. When `call_failed` is `True`, `parse_ok` is always `False`. For the result-level flag, see §17.1.
 
 ## `Attempt.ambiguous`
 
-Indicates whether the attempt was identified as ambiguous.
-
-```python
-
-if attempt.ambiguous:
-
-    print(attempt.interpretations)
-
-```
-
----
+Whether the attempt was identified as ambiguous.
 
 ## `Attempt.interpretations`
 
-Contains the interpretations detected for an ambiguous question.
-
-```python
-
-print(attempt.interpretations)
-
-```
-
----
+The interpretations detected for an ambiguous question.
 
 ## `Attempt.chosen_interpretation`
 
-Stores the interpretation selected by the model when applicable.
-
-The value is preserved even when it is falsy, such as:
-
-```python
-
-0
-
-```
-
-or:
-
-```python
-
-""
-
-```
-
----
+The interpretation selected by the model when applicable. Falsy-but-present values such as `0` or `""` are preserved (as strings), not discarded.
 
 ## `Attempt.passed_validation`
 
-Indicates whether the custom validator passed.
-
-```python
-
-attempt.passed_validation
-
-```
-
-When no validator was supplied, this is always:
-
-```python
-
-True
-
-```
-
----
+Whether the custom validator passed. When no validator was supplied, this is always `True`.
 
 ## `Attempt.validation_error`
 
-Contains the validation failure information when validation fails.
-
-When no validator is supplied, or validation succeeds:
-
-```python
-
-attempt.validation_error is None
-
-```
-
----
+The validation failure information when validation fails; `None` when no validator is supplied or validation succeeds.
 
 ## `Attempt.parsed`
 
-Contains the raw parsed JSON object for that attempt.
-
-If parsing failed:
-
-```python
-
-attempt.parsed is None
-
-```
+The raw parsed object for that attempt, before BOOTH's own coercion. When `parse_fn` is used, this is the dictionary your parser returned. If parsing failed, `attempt.parsed` is `None`.
 
 ---
 
 # 14. `BoothResult.n_attempts`
 
-`n_attempts` is the number of attempts BOOTH performed.
-
-It is equivalent to:
-
-```python
-
-len(result.attempts)
-
-```
-
-Example:
-
-```python
-
-print(result.n_attempts)
-
-```
-
-If:
-
-```python
-
-max_retries=2
-
-```
-
-the maximum possible value is:
-
-```text
-
-3
-
-```
+The number of attempts BOOTH performed. It is equivalent to `len(result.attempts)`. With `max_retries=2` the maximum is `3`.
 
 ---
 
 # 15. `BoothResult.ambiguous`
 
-`ambiguous` provides a convenient indication of whether the result is ambiguous.
-
-It can be used alongside:
+A convenient indication of whether the result is ambiguous. Use it alongside `result.interpretations`.
 
 ```python
-
-result.interpretations
-
-```
-
-For example:
-
-```python
-
 if result.ambiguous:
-
     print("The question has multiple interpretations.")
-
     print(result.interpretations)
-
 ```
 
 ---
 
 # 16. `BoothResult.interpretations`
 
-This contains the interpretations detected for an ambiguous result.
-
-```python
-
-if result.status == booth.AMBIGUOUS:
-
-    print(result.interpretations)
-
-```
-
-For example:
+The interpretations detected for an ambiguous result.
 
 ```text
-
-[
-
-    "Georgia the country",
-
-    "Georgia the US state"
-
-]
-
+["Georgia the country", "Georgia the US state"]
 ```
 
 ---
 
 # 17. `BoothResult.all_parse_failed`
 
-This property helps distinguish different kinds of `UNCERTAIN` results.
+Helps distinguish different kinds of `UNCERTAIN` results.
 
 ```python
-
 if result.status == booth.UNCERTAIN:
-
     if result.all_parse_failed:
-
         print("No attempt produced a valid response format.")
-
 ```
 
 If `all_parse_failed` is false, the model may have produced parseable responses that were rejected for another reason, such as validation or insufficient confidence.
 
-This property is specific to `check()`/`acheck()` results — a `check_with_evidence()` result has no attempts to inspect, so use `result.reason` (§7.8) there instead.
+This property is specific to `check()` and `acheck()` results. A `check_with_evidence()` result has no attempts, so use `result.reason` (§7.8) there.
 
 ---
 
 ## 17.1 `BoothResult.call_failed`
 
-`call_failed` is a computed property added in `v0.5.4`. It is `True` when every attempt failed because `call_fn` itself failed: it raised an exception (a bad API key, a retired model name, a network error), or returned something other than a string.
+`call_failed` is a computed property added in `v0.5.4`. It is `True` when **every** attempt failed because `call_fn` itself failed: it raised an exception (a bad API key, a retired model name, a network error), or returned something other than a string.
 
 ```python
-
 result = booth.check(call_llm, "What is the capital of France?")
 
 if result.call_failed:
-
     alert_engineering(result.attempts[-1].error)
-
 elif result.status == booth.UNCERTAIN:
-
     print("The model answered, but not acceptably:", result.method)
-
 ```
 
 Before `v0.5.4`, a failed call looked exactly like a model that returned garbage: `UNCERTAIN`, `method == "parse_failure"`, `all_parse_failed == True`. Those values are unchanged, so existing code keeps working, but `call_failed` now separates the two cases. The error text is on `result.attempts[-1].error`, and `attempt.call_failed` (§13) says which individual attempts failed.
 
 Like `all_parse_failed`, it looks at the whole history:
 
-* If a call fails once and a retry succeeds, the result is `REPAIRED` and `result.call_failed` is `False`. The first attempt still has `call_failed == True`.
+- If a call fails once and a retry succeeds, the result is `REPAIRED` and `result.call_failed` is `False`. The first attempt still has `call_failed == True`.
+- If a model answers with low confidence and the retry call then fails, `result.call_failed` is `False`. Check the last attempt's `call_failed` in that case.
 
-* If a model answers with low confidence and the retry call then fails, `result.call_failed` is `False`. Check the last attempt's `call_failed` in that case.
+BOOTH cannot tell a temporary failure from a permanent one without knowing each provider's error types, so a 401 is retried like any other failure. If you expect configuration errors, check `result.call_failed` and stop, or pass `max_retries=0`.
 
-BOOTH can't tell a temporary failure from a permanent one without knowing each provider's error types, so a 401 is retried like any other failure. If you expect configuration errors, check `result.call_failed` and stop, or pass `max_retries=0`.
-
-Always `False` on `check_with_evidence()` results, which have no attempts.
+A `parse_fn` failure is not a call failure. Always `False` on `check_with_evidence()` results.
 
 ---
 
 # 18. `BoothResult.method`
 
-`method` explains which BOOTH mechanism determined the result.
-
-Possible values include:
-
-```text
-
-"ambiguity"
-
-"evidence"
-
-"parse_failure"
-
-"validation"
-
-"confidence"
-
-```
-
-For example:
+`method` explains which BOOTH mechanism determined the result: `"ambiguity"`, `"evidence"`, `"parse_failure"`, `"validation"`, or `"confidence"`.
 
 ```python
-
 if result.status == booth.UNCERTAIN:
-
     if result.method == "parse_failure":
-
         print("No attempt could be parsed.")
-
     elif result.method == "validation":
-
         print("The answer never passed validation.")
-
     elif result.method == "confidence":
-
         print("Confidence never reached the threshold.")
-
 ```
 
-The meanings are:
+| Method | Meaning |
+| --- | --- |
+| `ambiguity` | The result was returned because of ambiguity |
+| `evidence` | The result came from `check_with_evidence()` |
+| `parse_failure` | Every attempt failed to parse (this includes failed `call_fn` calls and failed `parse_fn` results; see §17.1) |
+| `validation` | The final determining failure was validation |
+| `confidence` | The final determining failure was insufficient confidence |
 
-| Method          | Meaning                                                   |
-
-| --------------- | --------------------------------------------------------- |
-
-| `ambiguity`     | The result was blocked by ambiguity                       |
-
-| `evidence`      | The result came from `check_with_evidence()`              |
-
-| `parse_failure` | Every attempt failed to parse (this includes failed `call_fn` calls, see §17.1) |
-
-| `validation`    | The final determining failure was validation              |
-
-| `confidence`    | The final determining failure was insufficient confidence |
-
-`method` describes the determining mechanism rather than being a complete history of every attempt.
-
-For the complete history on a `check()`/`acheck()` result, inspect `result.attempts`. For a `check_with_evidence()` result — where `method` is always `"evidence"` and there's no attempt history — inspect `result.reason` and `result.detail` instead (§7.8) for the equivalent level of detail.
+`method` describes the determining mechanism, not the full history. For a `check()` or `acheck()` result, inspect `result.attempts`. For a `check_with_evidence()` result, inspect `result.reason` and `result.detail`.
 
 ---
 
 # 19. `BoothResult.parsed`
 
-`parsed` exposes the raw, uncoerced JSON object returned by the model.
-
-For example:
+`parsed` exposes the raw, uncoerced object returned by the model (or, when `parse_fn` is used, the dictionary your parser returned).
 
 ```python
-
-result = booth.check(
-
-    call_llm,
-
-    "What's the refund window?",
-
-)
+result = booth.check(call_llm, "What's the refund window?")
 
 print(result.answer)
-
 print(result.confidence)
-
 print(result.parsed)
-
 ```
 
-BOOTH normalizes fields such as:
-
-```text
-
-answer       → str
-
-confidence   → float
-
-interpretations → list[str]
-
-```
-
-But `parsed` preserves the original values.
-
-For example, the model might return:
-
-```json
-
-{
-
-    "answer": "30 days",
-
-    "confidence": "0.95"
-
-}
-
-```
-
-Then:
-
-```python
-
-result.confidence
-
-```
-
-can be:
-
-```python
-
-0.95
-
-```
-
-while:
-
-```python
-
-result.parsed["confidence"]
-
-```
-
-remains:
-
-```python
-
-"0.95"
-
-```
-
-This is intentional.
-
----
+BOOTH normalizes `answer` to `str`, `confidence` to `float`, and `interpretations` to `list[str]`, but `parsed` preserves the original values. If the model returns `{"answer": "30 days", "confidence": "0.95"}`, then `result.confidence` is `0.95` while `result.parsed["confidence"]` stays `"0.95"`. This is intentional.
 
 ## 19.1 Extra fields
 
-Additional fields returned by the model remain available through `parsed`.
-
-For example, if the model returns:
-
-```json
-
-{
-
-    "answer": "30 days",
-
-    "confidence": 0.95,
-
-    "source": "refund-policy.pdf"
-
-}
-
-```
-
-you can access:
+Additional fields remain available through `parsed`:
 
 ```python
-
 result.parsed.get("source")
-
 ```
 
 BOOTH does not validate or sanitize these extra fields.
 
----
-
 ## 19.2 Which attempt supplies `parsed`?
 
-For:
-
-```text
-
-ACCEPTED
-
-REPAIRED
-
-AMBIGUOUS
-
-```
-
-`parsed` comes from the winning attempt.
-
-For:
-
-```text
-
-UNCERTAIN
-
-```
-
-it comes from the last successfully parsed attempt, even if a later attempt failed to parse.
-
-If every attempt failed to parse:
-
-```python
-
-result.parsed is None
-
-```
-
-For:
-
-```python
-
-check_with_evidence()
-
-```
-
-`parsed` is always:
-
-```python
-
-None
-
-```
-
-because that path does not parse an LLM JSON response.
+For `ACCEPTED`, `REPAIRED`, and `AMBIGUOUS`, `parsed` comes from the winning attempt. For `UNCERTAIN` it comes from the last successfully parsed attempt, even if a later attempt failed to parse. If every attempt failed to parse, `result.parsed is None`. For `check_with_evidence()` it is always `None`.
 
 ---
 
@@ -2410,524 +1115,93 @@ because that path does not parse an LLM JSON response.
 `to_dict()` returns a plain dictionary containing the complete result.
 
 ```python
-
 payload = result.to_dict()
-
 ```
 
-It includes the normal result fields as well as computed properties such as:
+It includes the normal fields and the computed properties `ok`, `method`, `all_parse_failed`, `call_failed`, `n_attempts`, and `checker_failed`. This matters because `dataclasses.asdict(result)` does not include computed properties.
 
 ```python
-
-payload["ok"]
-
-payload["method"]
-
-payload["call_failed"]
-
-payload["checker_failed"]
-
-```
-
-This is important because:
-
-```python
-
-dataclasses.asdict(result)
-
-```
-
-does not automatically include properties such as `ok`, `method`, and `checker_failed`.
-
-Example:
-
-```python
-
 import json
 
-result = booth.check(
-
-    call_llm,
-
-    "What's the refund window?",
-
-)
-
 payload = result.to_dict()
-
 print(payload["ok"])
-
 print(payload["method"])
-
 json.dumps(payload)
-
 ```
 
-As of `v0.5.1`, `payload` also always contains `"reason"` and `"detail"` — `None` for `check()`/`acheck()` results, populated for `check_with_evidence()` results (§7.8).
+`payload` always contains `"reason"` and `"detail"` (as of `v0.5.1`) and `"call_failed"` (as of `v0.5.4`), and each entry in `payload["attempts"]` is a plain dictionary that includes `call_failed`.
 
-As of `v0.5.4`, `payload` also contains `"call_failed"`, and each entry in `payload["attempts"]` includes `call_failed` (§17.1).
-
-`to_dict()` is useful for:
-
-* logging
-
-* queues
-
-* monitoring
-
-* evaluation pipelines
-
-* JSON serialization
-
-* storing BOOTH results
+`to_dict()` is useful for logging, queues, monitoring, evaluation pipelines, and JSON serialization.
 
 ---
 
 # 21. Status Constants
 
-BOOTH exposes five status constants:
+BOOTH exposes five status constants: `booth.ACCEPTED`, `booth.REPAIRED`, `booth.AMBIGUOUS`, `booth.UNCERTAIN`, `booth.BLOCKED`.
+
+Use these constants instead of hard-coded strings.
 
 ```python
-
-booth.ACCEPTED
-
-booth.REPAIRED
-
-booth.AMBIGUOUS
-
-booth.UNCERTAIN
-
-booth.BLOCKED
-
-```
-
-Use these constants instead of relying on hard-coded status strings.
-
-Example:
-
-```python
-
 if result.status == booth.ACCEPTED:
-
     print(result.answer)
-
 ```
 
-**Note (v0.4.8):** this status was previously named `VERIFIED`. It has been renamed to `ACCEPTED`, with no backward-compatible alias. `from booth import VERIFIED` now raises `ImportError`, and the status *string* itself changed too (`"VERIFIED"` → `"ACCEPTED"`), so any code comparing against a hardcoded string literal instead of the exported constant needs updating as well.
+**Note (v0.4.8):** `ACCEPTED` was previously named `VERIFIED`, with no backward-compatible alias. `from booth import VERIFIED` raises `ImportError`, and the status string itself changed (`"VERIFIED"` to `"ACCEPTED"`).
 
 ## 21.1 Reason Codes
 
-As of `v0.5.1`, BOOTH also exposes five reason codes, set only on `check_with_evidence()` results (§7.8):
+As of `v0.5.1`, BOOTH exposes five reason codes, set only on `check_with_evidence()` results (§7.8): `booth.EMPTY_ANSWER`, `booth.NO_EVIDENCE`, `booth.EVIDENCE_DISAGREES`, `booth.COMPARE_FAILED`, `booth.INVALID_SCORE`.
 
-```python
-
-booth.EMPTY_ANSWER
-
-booth.NO_EVIDENCE
-
-booth.EVIDENCE_DISAGREES
-
-booth.COMPARE_FAILED
-
-booth.INVALID_SCORE
-
-```
-
-These are a distinct, smaller set from the status constants above — `reason` narrows down *why* a `check_with_evidence()` result came back `UNCERTAIN` or `BLOCKED`, it doesn't replace `status`. Use `result.status` for the coarse ACCEPTED/BLOCKED/UNCERTAIN outcome, and `result.reason` for the specific cause.
+These narrow down why a `check_with_evidence()` result came back `UNCERTAIN` or `BLOCKED`; they do not replace `status`.
 
 ---
 
 # 22. Default Constants
 
-BOOTH exposes its default configuration values:
-
 ```python
-
-booth.DEFAULT_THRESHOLD
-
-booth.DEFAULT_MAX_RETRIES
-
+booth.DEFAULT_THRESHOLD     # 0.7
+booth.DEFAULT_MAX_RETRIES   # 1
 ```
 
-These can be useful when building application configuration around BOOTH.
-
-Example:
-
-```python
-
-threshold = booth.DEFAULT_THRESHOLD
-
-max_retries = booth.DEFAULT_MAX_RETRIES
-
-```
+Useful when building application configuration around BOOTH.
 
 ---
 
 # 23. `CompareFn`
 
-`CompareFn` is the public type used for evidence comparison functions.
+`CompareFn` is the public type for evidence comparison functions.
 
 ```python
-
 from booth import CompareFn
 
-```
-
-A comparison function receives:
-
-```python
-
-answer
-
-evidence
-
-```
-
-For example:
-
-```python
-
 def compare(answer, evidence):
-
     return 0.9
 
 compare_fn: CompareFn = compare
-
 ```
 
-It can return either a boolean or a numeric comparison score according to the `check_with_evidence()` contract.
+It receives the answer and a sequence of evidence strings, and returns a boolean or a numeric score according to the `check_with_evidence()` contract. Because one-shot iterables are converted to a list first, `compare_fn` always receives a sequence.
 
 ---
 
 # 24. `ValidatorFn`
 
-`ValidatorFn` is the public type used for custom validators.
+`ValidatorFn` is the public type for custom validators.
 
 ```python
-
 from booth import ValidatorFn
 
-```
-
-Example:
-
-```python
-
 def is_valid_order_id(answer: str) -> bool:
-
     return answer.strip().upper().startswith("ORD-")
 
 my_validator: ValidatorFn = is_valid_order_id
-
 ```
 
-This is useful when type-checking application code that supplies validators to BOOTH.
+Useful when type-checking application code that supplies validators to BOOTH.
 
----
+## 24.1 `ParseFn`
 
-# 25. Complete Synchronous Example
-
-The following example combines the main BOOTH features:
-
-```python
-
-import booth
-
-def call_llm(prompt: str) -> str:
-
-    return llm_client(prompt)
-
-def validate_answer(answer: str):
-
-    if not answer.strip():
-
-        return False, "Answer cannot be empty"
-
-    return True, ""
-
-def ask(prompt: str):
-
-    result = booth.check(
-
-        call_llm,
-
-        prompt,
-
-        threshold=0.7,
-
-        max_retries=1,
-
-        validator=validate_answer,
-
-    )
-
-    if result.status == booth.AMBIGUOUS:
-
-        return {
-
-            "status": result.status,
-
-            "interpretations": result.interpretations,
-
-        }
-
-    if result.ok:
-
-        return {
-
-            "status": result.status,
-
-            "answer": result.answer,
-
-            "raw": result.parsed,
-
-        }
-
-    return {
-
-        "status": result.status,
-
-        "method": result.method,
-
-        "answer": None,
-
-    }
-
-```
-
----
-
-# 26. Complete Async Example
-
-```python
-
-import booth
-
-async def call_llm(prompt: str) -> str:
-
-    return await async_llm_client(prompt)
-
-def validate_answer(answer: str) -> bool:
-
-    return bool(answer.strip())
-
-async def ask(prompt: str):
-
-    result = await booth.acheck(
-
-        call_llm,
-
-        prompt,
-
-        threshold=0.7,
-
-        max_retries=1,
-
-        validator=validate_answer,
-
-    )
-
-    if result.ok:
-
-        return result.answer
-
-    return None
-
-```
-
----
-
-# 27. Combining Text Checking and Evidence Checking
-
-`check()` and `check_with_evidence()` are separate operations.
-
-For example:
-
-```python
-
-b_result = booth.check(
-
-    call_llm,
-
-    prompt,
-
-)
-
-if b_result.ok:
-
-    evidence_result = booth.check_with_evidence(
-
-        b_result.answer,
-
-        evidence,
-
-        compare_fn,
-
-    )
-
-```
-
-The two calls produce two independent `BoothResult` objects.
-
-BOOTH does not automatically combine them.
-
-Your application decides what the final policy should be.
-
-For example:
-
-```python
-
-if b_result.ok and evidence_result.ok:
-
-    final_answer = b_result.answer
-
-elif evidence_result.checker_failed:
-
-    final_answer = None
-
-    alert_engineering(evidence_result.detail)
-
-else:
-
-    final_answer = None
-
-```
-
----
-
-# 28. Inspecting Every Attempt
-
-When debugging or evaluating model behavior, inspect `attempts`:
-
-```python
-
-result = booth.check(
-
-    call_llm,
-
-    prompt,
-
-    max_retries=2,
-
-)
-
-for index, attempt in enumerate(result.attempts):
-
-    print("Attempt:", index)
-
-    print("Raw:", attempt.raw_text)
-
-    print("Answer:", attempt.answer)
-
-    print("Confidence:", attempt.confidence)
-
-    print("Parsed:", attempt.parse_ok)
-
-    print("Call failed:", attempt.call_failed)
-
-    print("Ambiguous:", attempt.ambiguous)
-
-    print("Validation:", attempt.passed_validation)
-
-    print()
-
-```
-
-This gives you more information than `result.status` alone.
-
-For a `check_with_evidence()` result, there's no attempt history to loop over — go straight to `result.reason` and `result.detail` instead (§7.8).
-
----
-
-# 29. Public API
-
-The public package exports the following:
-
-```python
-
-from booth import (
-
-    Attempt,
-
-    BoothResult,
-
-    BoothRejected,
-
-    check,
-
-    acheck,
-
-    check_with_evidence,
-
-    CompareFn,
-
-    ValidatorFn,
-
-    ParseFn,
-
-    ACCEPTED,
-
-    REPAIRED,
-
-    AMBIGUOUS,
-
-    BLOCKED,
-
-    UNCERTAIN,
-
-    EMPTY_ANSWER,
-
-    NO_EVIDENCE,
-
-    EVIDENCE_DISAGREES,
-
-    COMPARE_FAILED,
-
-    INVALID_SCORE,
-
-    DEFAULT_THRESHOLD,
-
-    DEFAULT_MAX_RETRIES,
-
-)
-
-```
-
-The three primary functions are:
-
-```python
-
-booth.check()
-
-booth.acheck()
-
-booth.check_with_evidence()
-
-```
-
-The primary result and type objects are:
-
-```python
-
-booth.Attempt
-
-booth.BoothResult
-
-booth.BoothRejected
-
-booth.CompareFn
-
-booth.ValidatorFn
-
-booth.ParseFn
-
-```
-
-## `ParseFn`
-
-`ParseFn` is the public type for a synchronous parser used with `parse_fn`.
-It accepts the raw string returned by `call_fn` and returns a dictionary or
-`None` when parsing fails.
+`ParseFn` is the public type for a synchronous parser used with `parse_fn`, added in `v0.5.7`. It accepts the raw string returned by `call_fn` and returns a dictionary, or `None` when parsing fails.
 
 ```python
 from typing import Optional
@@ -2939,47 +1213,163 @@ def parse_provider_response(raw: str) -> Optional[dict]:
 parser: ParseFn = parse_provider_response
 ```
 
-The status constants are:
+---
+
+# 25. Complete Synchronous Example
 
 ```python
+import booth
 
-booth.ACCEPTED
+def call_llm(prompt: str) -> str:
+    return llm_client(prompt)
 
-booth.REPAIRED
+def validate_answer(answer: str):
+    if not answer.strip():
+        return False, "Answer cannot be empty"
+    return True, ""
 
-booth.AMBIGUOUS
+def ask(prompt: str):
+    result = booth.check(
+        call_llm,
+        prompt,
+        threshold=0.7,
+        max_retries=1,
+        validator=validate_answer,
+    )
 
-booth.UNCERTAIN
+    if result.status == booth.AMBIGUOUS:
+        return {"status": result.status, "interpretations": result.interpretations}
 
-booth.BLOCKED
+    if result.ok:
+        return {"status": result.status, "answer": result.answer, "raw": result.parsed}
 
+    return {"status": result.status, "method": result.method, "answer": None}
 ```
 
-The reason codes (`check_with_evidence()` results only, added `v0.5.1`) are:
+With a provider-native response format:
 
 ```python
-
-booth.EMPTY_ANSWER
-
-booth.NO_EVIDENCE
-
-booth.EVIDENCE_DISAGREES
-
-booth.COMPARE_FAILED
-
-booth.INVALID_SCORE
-
+result = booth.check(
+    call_llm,
+    prompt,
+    parse_fn=parse_provider_response,
+    max_retries=0,
+)
 ```
 
-The default configuration constants are:
+---
+
+# 26. Complete Async Example
 
 ```python
+import booth
 
-booth.DEFAULT_THRESHOLD
+async def call_llm(prompt: str) -> str:
+    return await async_llm_client(prompt)
 
-booth.DEFAULT_MAX_RETRIES
+def validate_answer(answer: str) -> bool:
+    return bool(answer.strip())
 
+async def ask(prompt: str):
+    result = await booth.acheck(
+        call_llm,
+        prompt,
+        threshold=0.7,
+        max_retries=1,
+        validator=validate_answer,
+    )
+
+    if result.ok:
+        return result.answer
+    return None
 ```
+
+---
+
+# 27. Combining Text Checking and Evidence Checking
+
+`check()` and `check_with_evidence()` are separate operations.
+
+```python
+b_result = booth.check(call_llm, prompt)
+
+if b_result.ok:
+    evidence_result = booth.check_with_evidence(b_result.answer, evidence, compare_fn)
+```
+
+The two calls produce two independent `BoothResult` objects. BOOTH does not combine them; your application decides the final policy.
+
+```python
+if b_result.ok and evidence_result.ok:
+    final_answer = b_result.answer
+elif evidence_result.checker_failed:
+    final_answer = None
+    alert_engineering(evidence_result.detail)
+else:
+    final_answer = None
+```
+
+---
+
+# 28. Inspecting Every Attempt
+
+When debugging or evaluating model behavior, inspect `attempts`:
+
+```python
+result = booth.check(call_llm, prompt, max_retries=2)
+
+for index, attempt in enumerate(result.attempts):
+    print("Attempt:", index)
+    print("Raw:", attempt.raw_text)
+    print("Answer:", attempt.answer)
+    print("Confidence:", attempt.confidence)
+    print("Parsed:", attempt.parse_ok)
+    print("Call failed:", attempt.call_failed)
+    print("Ambiguous:", attempt.ambiguous)
+    print("Validation:", attempt.passed_validation)
+    print("Error:", attempt.error)
+    print()
+```
+
+For a `check_with_evidence()` result there is no attempt history; use `result.reason` and `result.detail` (§7.8).
+
+---
+
+# 29. Public API
+
+The public package exports:
+
+```python
+from booth import (
+    Attempt,
+    BoothResult,
+    BoothRejected,
+    check,
+    acheck,
+    check_with_evidence,
+    CompareFn,
+    ValidatorFn,
+    ParseFn,
+    ACCEPTED,
+    REPAIRED,
+    AMBIGUOUS,
+    BLOCKED,
+    UNCERTAIN,
+    EMPTY_ANSWER,
+    NO_EVIDENCE,
+    EVIDENCE_DISAGREES,
+    COMPARE_FAILED,
+    INVALID_SCORE,
+    DEFAULT_THRESHOLD,
+    DEFAULT_MAX_RETRIES,
+)
+```
+
+The three primary functions are `booth.check()`, `booth.acheck()`, and `booth.check_with_evidence()`.
+
+The primary result and type objects are `booth.Attempt`, `booth.BoothResult`, `booth.BoothRejected`, `booth.CompareFn`, `booth.ValidatorFn`, and `booth.ParseFn`.
+
+The status constants are `ACCEPTED`, `REPAIRED`, `AMBIGUOUS`, `UNCERTAIN`, and `BLOCKED`. The reason codes (`check_with_evidence()` results only) are `EMPTY_ANSWER`, `NO_EVIDENCE`, `EVIDENCE_DISAGREES`, `COMPARE_FAILED`, and `INVALID_SCORE`. The default configuration constants are `DEFAULT_THRESHOLD` and `DEFAULT_MAX_RETRIES`.
 
 ---
 
@@ -2987,226 +1377,138 @@ booth.DEFAULT_MAX_RETRIES
 
 ## Functions
 
-| Function                | Purpose                                              |
-
-| ----------------------- | ---------------------------------------------------- |
-
-| `check()`               | Run a synchronous LLM checkpoint                     |
-
-| `acheck()`              | Run an asynchronous LLM checkpoint                   |
-
+| Function | Purpose |
+| --- | --- |
+| `check()` | Run a synchronous LLM checkpoint |
+| `acheck()` | Run an asynchronous LLM checkpoint |
 | `check_with_evidence()` | Compare an existing answer against supplied evidence |
 
 ## Main types
 
-| Type            | Purpose                                |
-
-| --------------- | --------------------------------------- |
-
-| `Attempt`       | Represents one LLM attempt             |
-
-| `BoothResult`   | Represents the final result            |
-
+| Type | Purpose |
+| --- | --- |
+| `Attempt` | Represents one LLM attempt |
+| `BoothResult` | Represents the final result |
 | `BoothRejected` | Raised by `unwrap()` on a non-ok result |
-
-| `validator`      | Optional custom answer validator       |
-
-| `CompareFn`     | Type for evidence comparison functions |
-
-| `ValidatorFn`   | Type for custom answer validators      |
+| `CompareFn` | Type for evidence comparison functions |
+| `ValidatorFn` | Type for custom answer validators |
+| `ParseFn` | Type for synchronous response parsers (v0.5.7) |
 
 ## Result statuses
 
-| Status      | Meaning                                        |
-
-| ----------- | ----------------------------------------------- |
-
-| `ACCEPTED`  | Accepted on the current attempt                |
-
-| `REPAIRED`  | Accepted after a retry                         |
-
+| Status | Meaning |
+| --- | --- |
+| `ACCEPTED` | Accepted on the first attempt |
+| `REPAIRED` | Accepted after a retry |
 | `AMBIGUOUS` | Question has multiple detected interpretations |
-
-| `UNCERTAIN` | No acceptable result was produced              |
-
-| `BLOCKED`   | Evidence comparison failed                     |
+| `UNCERTAIN` | No acceptable result was produced |
+| `BLOCKED` | Evidence comparison failed |
 
 ## `check_with_evidence()` reason codes (v0.5.1+)
 
-| Reason                | Status      | `checker_failed` |
-
-| ---------------------- | ----------- | ----------------- |
-
-| `EMPTY_ANSWER`          | `UNCERTAIN` | `False`            |
-
-| `NO_EVIDENCE`           | `UNCERTAIN` | `False`            |
-
-| `COMPARE_FAILED`        | `UNCERTAIN` | `True`             |
-
-| `INVALID_SCORE`         | `UNCERTAIN` | `True`             |
-
-| `EVIDENCE_DISAGREES`    | `BLOCKED`   | `False`            |
+| Reason | Status | `checker_failed` |
+| --- | --- | --- |
+| `EMPTY_ANSWER` | `UNCERTAIN` | `False` |
+| `NO_EVIDENCE` | `UNCERTAIN` | `False` |
+| `COMPARE_FAILED` | `UNCERTAIN` | `True` |
+| `INVALID_SCORE` | `UNCERTAIN` | `True` |
+| `EVIDENCE_DISAGREES` | `BLOCKED` | `False` |
 
 See §7.8 for the full breakdown.
 
-## Entry-point argument validation (v0.5.2)
+## Entry-point argument validation
 
-These arguments raise a clear, specific error at the call site rather than crashing deep inside BOOTH's internals:
+These arguments raise a clear, specific error at the call site, before any LLM call:
 
-| Argument             | Functions                          | Invalid raises                                      |
-
-| -------------------- | ----------------------------------- | ----------------------------------------------------- |
-
-| `prompt`              | `check()`, `acheck()`               | `TypeError` if not `str` (v0.5.2)                     |
-
-| `call_fn`             | `check()`, `acheck()`               | `TypeError` if not callable (v0.5.2)                  |
-
-| `threshold`           | `check()`, `acheck()`               | `ValueError` if outside `[0.0, 1.0]`                  |
-
-| `max_retries`         | `check()`, `acheck()`               | `TypeError` if not `int`; `ValueError` if negative    |
-
-| `on_attempt`          | `check()`, `acheck()`               | `TypeError` if not callable (v0.5.3); `check()` also rejects an async one |
-
-| `parse_fn`            | `check()`, `acheck()`               | `TypeError` if not callable; must be synchronous                 |
-
-| `answer`              | `check_with_evidence()`             | `TypeError` if not `str`/`None` (v0.4.9)              |
-
-| `evidence_threshold`  | `check_with_evidence()`             | `TypeError` if not a real number; `ValueError` if outside `[0.0, 1.0]` |
+| Argument | Functions | Invalid raises |
+| --- | --- | --- |
+| `prompt` | `check()`, `acheck()` | `TypeError` if not `str` (v0.5.2) |
+| `call_fn` | `check()`, `acheck()` | `TypeError` if not callable (v0.5.2); `check()` rejects an async one and `acheck()` a sync one |
+| `threshold` | `check()`, `acheck()` | `ValueError` if outside `[0.0, 1.0]` |
+| `max_retries` | `check()`, `acheck()` | `TypeError` if not `int`; `ValueError` if negative |
+| `on_attempt` | `check()`, `acheck()` | `TypeError` if not callable (v0.5.3); `check()` also rejects an async one |
+| `validator` | `check()`, `acheck()` | `TypeError` if not callable (v0.5.5) |
+| `parse_fn` | `check()`, `acheck()` | `TypeError` if not callable or if `async def` (v0.5.7) |
+| `answer` | `check_with_evidence()` | `TypeError` if not `str`/`None` (v0.4.9) |
+| `evidence_threshold` | `check_with_evidence()` | `TypeError` if not a real number; `ValueError` if outside `[0.0, 1.0]` |
 
 ## Important result properties
 
 ```python
-
 result.answer
-
 result.status
-
 result.confidence
-
 result.evidence_agreement
-
 result.attempts
-
 result.n_attempts
-
 result.ok
-
 result.ambiguous
-
 result.interpretations
-
 result.all_parse_failed
-
 result.call_failed
-
 result.method
-
 result.parsed
-
 result.reason
-
 result.detail
-
 result.checker_failed
-
 ```
 
 ## Strict accessors
 
 ```python
-
 result.unwrap()             # str, or raises BoothRejected
-
 result.unwrap_or(default)   # str, or `default` if not ok
-
 ```
 
-Use these when you want a plain `str` back instead of handling `Optional[str]` at every call site — see §9.1/§9.2.
+Use these when you want a plain `str` back instead of handling `Optional[str]` at every call site (§9.1, §9.2).
 
 ## Result serialization
 
 ```python
-
 result.to_dict()
-
 ```
-
-Use `to_dict()` when you need the complete result in a JSON-compatible dictionary.
 
 ---
 
 # 31. The Core Mental Model
 
-The easiest way to understand BOOTH is:
-
 ```text
-
 check()
-
   │
-
-  ├── call the LLM
-
+  ├── call the LLM (call_fn returns a string)
   │
-
-  ├── parse the response
-
+  ├── parse the response (default extraction, or parse_fn)
   │
-
   ├── detect ambiguity
-
   │
-
   ├── run validator (if supplied)
-
   │
-
   ├── check confidence
-
   │
-
   ├── retry when appropriate
-
   │
-
   └── return BoothResult
-
 ```
 
 For evidence:
 
 ```text
-
 check_with_evidence()
-
   │
-
   ├── receive answer         → empty/whitespace? reason=EMPTY_ANSWER
-
   ├── receive evidence       → empty sequence?   reason=NO_EVIDENCE
-
   ├── call compare_fn        → raised?           reason=COMPARE_FAILED
-
   ├── interpret the result   → unusable score?   reason=INVALID_SCORE
-
   ├── compare to threshold   → below threshold?  reason=EVIDENCE_DISAGREES
-
   └── return BoothResult
-
 ```
 
 And for asynchronous applications:
 
 ```text
-
 acheck()
-
   │
-
-  └── same checkpoint process as check()
-
-      using asynchronous LLM calls
-
+  └── same checkpoint process as check(), using asynchronous LLM calls
 ```
 
-BOOTH therefore provides the checkpoint and retry mechanics while leaving the LLM provider, evidence retrieval, comparison logic, and application-specific validation under your application's control.
+BOOTH provides the checkpoint and retry mechanics while leaving the LLM provider, evidence retrieval, comparison logic, and application-specific validation under your application's control.
