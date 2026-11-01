@@ -7,6 +7,13 @@ surface bump the patch version.
 
 ## [Unreleased]
 
+- **Fixed: malformed numeric and deeply nested model output.** JSON decoding
+  failures (including oversized integers and excessive nesting), confidence
+  overflow, and oversized parsed answers now yield an ordinary parse-failure
+  attempt in `check()` and `acheck()`, rather than raising to the caller. The
+  existing retry prompt and `call_failed=False` distinction are preserved.
+  Regression tests cover both entry points and the `parse_fn` path (#30).
+
 ## [v0.5.7] — parse_fn structured-output escape hatch
 
 - CI: added a mypy job that type-checks `src/booth/` against the Python 3.9 target (thanks @rk042, #25). mypy is installed via a new `typecheck` extra, not `dev`. No library change.

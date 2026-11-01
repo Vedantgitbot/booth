@@ -236,7 +236,7 @@ def _build_validation_failure_prompt(original_prompt: str, previous: Attempt) ->
 def _try_json(candidate: str) -> Optional[dict]:
     try:
         obj = json.loads(candidate)
-    except (json.JSONDecodeError, TypeError):
+    except (ValueError, TypeError, OverflowError, RecursionError):
         return None
     return obj if isinstance(obj, dict) else None
 
@@ -252,10 +252,39 @@ def _iter_raw_decoded_objects(text: str):
             continue
         try:
             obj, _ = decoder.raw_decode(text, idx)
-        except json.JSONDecodeError:
+        except (ValueError, OverflowError, RecursionError):
             continue
         if isinstance(obj, dict):
             yield obj
+
+
+def _exceeds_json_nesting_limit(text: str, limit: int = 1024) -> bool:
+    """Reject pathological JSON depth before scanning every possible object start.
+
+    The decoder has a recursion limit. Trying it at each brace in a deeply
+    nested payload otherwise turns one malformed model answer into many costly
+    decode attempts. Quotes and escaped characters do not contribute to depth.
+    """
+    depth = 0
+    quoted = False
+    escaped = False
+    for char in text:
+        if quoted:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                quoted = False
+        elif char == '"':
+            quoted = True
+        elif char in "{[":
+            depth += 1
+            if depth > limit:
+                return True
+        elif char in "}]":
+            depth = max(0, depth - 1)
+    return False
 
 
 def _attempt_from_parsed(parsed, raw_text: str) -> Tuple[Optional[Attempt], Optional[str]]:
@@ -272,12 +301,17 @@ def _attempt_from_parsed(parsed, raw_text: str) -> Tuple[Optional[Attempt], Opti
     if isinstance(answer, (dict, list)):
         return None, "'answer' was a dict/list, not a scalar value"
     if not isinstance(answer, str):
-        answer = str(answer)
+        try:
+            answer = str(answer)
+        except (ValueError, OverflowError, RecursionError):
+            return None, "'answer' could not be converted to a string"
 
     if isinstance(confidence, bool):  # bool is an int subclass, so check before float()
         return None, "'confidence' was a boolean, not a number"
     try:
         confidence = float(confidence)
+    except OverflowError:
+        return None, "'confidence' could not be converted to a float: value too large"
     except (TypeError, ValueError):
         return None, f"'confidence' could not be converted to a float: {confidence!r}"
     if not 0.0 <= confidence <= 1.0:
@@ -331,6 +365,9 @@ def _attempt_from_parsed_response(parsed, raw_text: str) -> Attempt:
 
 
 def _parse_response(raw_text: str) -> Attempt:
+    if _exceeds_json_nesting_limit(raw_text):
+        return _failed_parse_attempt(raw_text, "JSON nesting exceeds the safe parser limit")
+
     candidates: List[Union[str, dict]] = []
 
     stripped = raw_text.strip()
