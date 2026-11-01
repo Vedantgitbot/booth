@@ -1,6 +1,7 @@
 """Compare independent-sample agreement with model-reported confidence.
 
-Requires Python 3.9+, Ollama 0.24.0, local model qwen2.5-coder:7b and boothpy 0.5.7.
+Requires Python 3.9+, Ollama, local model qwen2.5-coder:7b and boothpy 0.5.7.
+The documented run used Ollama 0.24.0 and the model digest below.
 From this folder (after starting Ollama):
 
     ollama pull qwen2.5-coder:7b
@@ -78,8 +79,9 @@ def preflight():
     except Exception as exc:
         sys.exit(f"Cannot inspect Ollama or find {MODEL}: {type(exc).__name__}: {exc}")
     if server_version != OLLAMA_VERSION or digest != MODEL_DIGEST:
-        sys.exit(f"Expected Ollama {OLLAMA_VERSION} and model digest {MODEL_DIGEST}; "
-                 f"found {server_version} and {digest}. See RESULTS.md for the pinned run.")
+        print(f"Warning: documented run used Ollama {OLLAMA_VERSION} and model digest "
+              f"{MODEL_DIGEST}; this run uses Ollama {server_version} and model digest "
+              f"{digest}. Results may differ.")
     print(f"Run UTC: {datetime.now(timezone.utc).isoformat()}")
     print(f"Python: {platform.python_version()}; OS: {platform.platform()}")
     print(f"boothpy: {version}; Ollama server: {server_version}")

@@ -6,6 +6,10 @@ The current script contains ten self-authored integer-arithmetic questions
 held out from all earlier runs. The dataset is small and not representative
 of general usage.
 
+In the held-out run, 8 of 10 questions were eligible: the first answer was
+wrong on 2. Agreement blocked both wrong answers and also blocked 1 correct
+answer; the confidence threshold accepted all 8 first answers.
+
 ## Held-out run: 2026-11-01
 
 Ten new self-authored arithmetic questions were run once each with three
@@ -18,6 +22,14 @@ question 1 had three non-integer answers, and question 2 had a non-integer
 first answer. Across all 30 calls, 26 answers passed validation, four did not,
 and no API calls failed. Excluded questions are not counted as successes or
 failures of either comparison method.
+
+The four invalid answer strings were `.json` and two JSON-like strings
+containing `"result": 112` for question 1, and `integer` for question 2.
+The nested result 112 in both strings is correct for question 1; one nested
+string has malformed JSON (`1.`). The integer-only rule excluded both strings,
+so it overlooks those two matching correct values. The first sample was
+`.json`, however, so we cannot determine a complete three-sample agreement
+decision for that question. Question 2's other samples were `3` and `117`.
 
 | Among the 8 eligible questions | Agreement | Confidence |
 | --- | ---: | ---: |
@@ -33,8 +45,10 @@ Per wrong first answer:
 | 72 / 8 | 9 | 18, 4, 4 | Disagreed; wrong first answer blocked | 1.0 |
 
 No eligible case had three matching wrong answers; such an answer would be
-accepted by this agreement rule. There was one wrong block: for 18 × 8 the
-first answer was correct (144), but the samples were 144, 576, 144.
+accepted by this agreement rule. The consistently-wrong slip-through risk is
+therefore described but not measured in this run. There was one wrong block:
+for 18 × 8 the first answer was correct (144), but the samples were 144, 576,
+144.
 
 The run made 30 calls, versus 10 for a one-sample-per-question baseline:
 20 extra calls. The observed elapsed time was 385.0 seconds. The first calls
