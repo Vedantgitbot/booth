@@ -1,6 +1,6 @@
 # BOOTH Tutorial
 
-A practical guide to BOOTH's public API and how each function, type, property, and method works. This version documents `v0.5.7`.
+A practical guide to BOOTH's public API and how each function, type, property, and method works. This version documents `v0.5.8`.
 
 BOOTH is a lightweight checkpoint layer for LLM outputs. It takes an LLM call, evaluates the returned response for parsing, ambiguity, confidence, and optional application-specific validation, and gives your application a structured `BoothResult`.
 
@@ -1373,7 +1373,7 @@ The status constants are `ACCEPTED`, `REPAIRED`, `AMBIGUOUS`, `UNCERTAIN`, and `
 
 ---
 
-# 30. Quick Reference (v0.5.2 to v0.5.7)
+# 30. Quick Reference (v0.5.2 to v0.5.8)
 
 ## Functions
 

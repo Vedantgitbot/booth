@@ -7,12 +7,16 @@ surface bump the patch version.
 
 ## [Unreleased]
 
+## [v0.5.8] — malformed numeric and deeply nested model output no longer crashes check()/acheck()
+
 - **Fixed: malformed numeric and deeply nested model output.** JSON decoding
   failures (including oversized integers and excessive nesting), confidence
   overflow, and oversized parsed answers now yield an ordinary parse-failure
   attempt in `check()` and `acheck()`, rather than raising to the caller. The
   existing retry prompt and `call_failed=False` distinction are preserved.
-  Regression tests cover both entry points and the `parse_fn` path (#30).
+  Regression tests cover both entry points and the `parse_fn` path.
+  JSON nested deeper than 1024 levels is now treated as a parse failure
+  (thanks @Kaan081, #31). Fixes #30.
 
 ## [v0.5.7] — parse_fn structured-output escape hatch
 
@@ -938,8 +942,9 @@ inspection, and every fix has a dedicated regression test.
   (not blind resampling) when confidence is below a configurable
   threshold. `VERIFIED` / `REPAIRED` / `UNCERTAIN` statuses.
 
-[Unreleased]: https://github.com/Vedantgitbot/booth/compare/v0.5.7...HEAD
+[Unreleased]: https://github.com/Vedantgitbot/booth/compare/v0.5.8...HEAD
 
+[v0.5.8]: https://github.com/Vedantgitbot/booth/releases/tag/v0.5.8
 [v0.5.7]: https://github.com/Vedantgitbot/booth/releases/tag/v0.5.7
 [v0.5.6]: https://github.com/Vedantgitbot/booth/releases/tag/v0.5.6
 [v0.5.5]: https://github.com/Vedantgitbot/booth/releases/tag/v0.5.5

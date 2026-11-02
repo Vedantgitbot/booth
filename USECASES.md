@@ -13,7 +13,7 @@ BOOTH can check whether a response:
 
 BOOTH does **not** independently establish that an answer is true. That distinction is important.
 
-This document covers when BOOTH fits and when it does not. For how each function, type, and property works, see the [Tutorial](TUTORIAL.md). This version describes `v0.5.7`.
+This document covers when BOOTH fits and when it does not. For how each function, type, and property works, see the [Tutorial](TUTORIAL.md). This version describes `v0.5.8`.
 
 ---
 
