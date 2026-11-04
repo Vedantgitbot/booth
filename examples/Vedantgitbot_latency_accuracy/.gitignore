@@ -1,0 +1,24 @@
+# Dataset download cache (re-created by run_example.py on demand)
+.cache/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local configuration and secrets (API keys must come from environment variables)
+.env
+.env.*
+*.local.json
+local_config*
+
+# OS / editor files
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Generated run output (manifest.json, results.jsonl, summary.md)
+output/
+*.log
