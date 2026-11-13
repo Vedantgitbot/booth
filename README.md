@@ -140,7 +140,7 @@ See [Provider Integrations and Examples](#-provider-integrations-and-examples) f
 
 ---
 
-## Why BOOTH Exists
+## Why BOOTH Exists?
 
 A few months ago, a person working an airport gate helped me find mine after I'd gotten lost. Boarding pass in hand, signs everywhere, I was still at the wrong gate.
 
@@ -155,6 +155,13 @@ But the problem still happens, because it isn't always a knowledge problem. Some
 BOOTH doesn't try to know more than your model does. It just knows what to check.
 
 I wrote the longer version on Substack: ["Knowing less, but knowing what matters"](https://substack.com/home/post/p-215310975).
+
+---
+
+## 🌟 Featured
+
+- [Python Weekly, Issue 767](https://www.pythonweekly.com/p/python-weekly-issue-767-october-15-2026) (October 15, 2026)
+- [PythonHub on X](https://x.com/PythonHub/status/2114752745504686172)
 
 ---
 
@@ -330,6 +337,8 @@ See [CONTRIBUTING.md](https://github.com/Vedantgitbot/booth/blob/main/CONTRIBUTI
 - How to report a bug.
 - What makes a useful reproduction.
 - What "small on purpose" means for feature proposals and pull requests.
+
+Thank you to everyone who has contributed to BOOTH. See the full list of [contributors](https://github.com/Vedantgitbot/booth/graphs/contributors).
 
 ---
 
