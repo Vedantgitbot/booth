@@ -32,6 +32,7 @@ def test_existing_single_and_final_line_behavior_remains(raw):
 @pytest.mark.parametrize("tail", [
     '{"debug": "done"}',
     '{"answer": "final"}',
+    '{"answer": "final", "confidence": 2}',
     '{"answer": "final", "confidence": 0.9',
 ])
 def test_invalid_or_unrelated_later_object_keeps_existing_fallback(tail):
@@ -44,6 +45,35 @@ def test_later_valid_candidate_is_chosen_even_with_trailing_prose():
     result = check(EARLY + " " + FINAL + " trailing prose")
     assert result.status == booth.ACCEPTED
     assert result.answer == "final"
+
+
+def test_math_braces_before_final_json_are_not_candidates():
+    raw = r"Working: \frac{1}{2} = 0.5." + "\n" + FINAL + "\nDone."
+    result = check(raw)
+    assert result.status == booth.ACCEPTED
+    assert result.answer == "final"
+
+
+def test_escaped_quotes_and_braces_inside_answer_are_preserved():
+    answer = 'The value of "{key}" is 1.'
+    raw = "Reasoning first.\n" + json.dumps({"answer": answer, "confidence": 0.9}) + "\nDone."
+    result = check(raw)
+    assert result.status == booth.ACCEPTED
+    assert result.answer == answer
+
+
+def test_custom_parse_fn_receives_original_response():
+    raw = EARLY + " " + FINAL + " trailing prose"
+    seen = []
+
+    def parse_fn(text):
+        seen.append(text)
+        return {"answer": "custom", "confidence": 0.9}
+
+    result = booth.check(lambda prompt: raw, "review", max_retries=0, parse_fn=parse_fn)
+    assert result.status == booth.ACCEPTED
+    assert result.answer == "custom"
+    assert seen == [raw]
 
 
 def test_several_invalid_objects_report_last_objects_error():
