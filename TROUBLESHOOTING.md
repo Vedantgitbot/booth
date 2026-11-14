@@ -2,7 +2,7 @@
 
 Known gotchas collected from real integration runs in `examples/`. Each entry follows the same shape: **symptom → cause → what to do**, with a link to where it was observed.
 
-The runs behind these entries used BOOTH 0.4.9 to 0.5.4. Entries 1, 3 and 4 were updated for v0.5.4, which added `call_failed`; entry 9 describes v0.5.5. If a later release changes behavior, the [CHANGELOG](CHANGELOG.md) is the source of truth.
+The runs behind these entries used BOOTH 0.4.9 to 0.5.4. Entries 1, 3 and 4 were updated for v0.5.4, which added `call_failed`; entry 9 describes v0.5.5. Entry 10 comes from the benchmark in issues #32 and #33 (BOOTH 0.5.8, with the parser change from 0.5.9). If a later release changes behavior, the [CHANGELOG](CHANGELOG.md) is the source of truth.
 
 ## Contents
 
@@ -23,6 +23,8 @@ The runs behind these entries used BOOTH 0.4.9 to 0.5.4. Entries 1, 3 and 4 were
 8. [Conflicting evidence still comes back `ACCEPTED`](#8-conflicting-evidence-still-comes-back-accepted)
 
 9. [`TypeError: validator must be callable`](#9-typeerror-validator-must-be-callable)
+
+10. [Accuracy drops on reasoning-heavy tasks](#10-accuracy-drops-on-reasoning-heavy-tasks-maths-multi-step-questions)
 
 ---
 
@@ -159,3 +161,47 @@ If you are on v0.5.3 or earlier, upgrade (`pip install -U boothpy`), or use the 
 **Cause.** From v0.5.5, a non-callable `validator` is rejected upfront. Before that it failed every attempt and returned `UNCERTAIN`, after spending all retries. The usual mistake is passing the result of calling a function (a `bool` or a `tuple`) instead of the function itself.
 
 **What to do.** Pass the function: `validator=is_valid` rather than `validator=is_valid(answer)`.
+
+---
+
+## 10. Accuracy drops on reasoning-heavy tasks (maths, multi-step questions)
+
+**Symptom.** `booth.check()` gets fewer questions right than the same model called directly, mostly on questions that need working out (maths word problems, multi-step reasoning).
+
+**Cause.** BOOTH's prompt ends with "Output ONLY the JSON object, nothing else." A small model may skip its step-by-step reasoning and answer straight away. In the benchmark in `examples/Vedantgitbot_latency_accuracy` on `qwen2.5:7b`, GSM8K accuracy fell from 97.5% to 35.0% under the JSON-only prompt, and replies shrank from about 261 to 36 tokens. Letting the model reason before the JSON brought GSM8K back to 92.5%. On `gemma3:12b` the shorter replies did not reproduce (about 247 against 220 tokens), and the larger cost was the `AMBIGUOUS` gate: 11 questions were rejected, 10 of them on TruthfulQA. The samples are small, so treat these as a signal and not a measurement. Details are in the example's `RESULTS.md` and in issue [#33](https://github.com/Vedantgitbot/booth/issues/33).
+
+In these runs the model's self-reported confidence and its `AMBIGUOUS` flag did not separate right answers from wrong ones (see entries 2 and 5).
+
+**What to do.**
+
+1. Measure on your own model: `python examples/Vedantgitbot_latency_accuracy/run_example.py --model <tag>`, then compare the plain and BOOTH arms.
+2. If your tasks need reasoning, give the model room to reason before the JSON. Wrap your `call_fn` and replace BOOTH's closing sentence. Since 0.5.9 BOOTH uses the last valid top-level JSON object in the reply, so reasoning text before it is fine, and any draft object inside that reasoning is ignored.
+
+```python
+import booth
+
+ONLY_JSON = "Output ONLY the JSON object, nothing else."
+REASON_ENDING = (
+    "First think the problem through step by step in plain text. Then, as the "
+    "LAST thing in your reply, output the JSON object described above."
+)
+
+def with_reasoning_room(call_llm):
+    def wrapped(prompt):
+        if ONLY_JSON not in prompt:
+            raise RuntimeError("BOOTH's prompt wording changed; update this wrapper")
+        return call_llm(prompt.replace(ONLY_JSON, REASON_ENDING))
+    return wrapped
+
+result = booth.check(with_reasoning_room(call_llm), "What is half of 12 * 4?")
+```
+
+**Limits of the workaround.**
+
+- It depends on BOOTH's current wording. If a later release changes that sentence, the wrapper raises. BOOTH records that as a failed call, so check `result.call_failed` (entry 1).
+- If a reply cannot be parsed, BOOTH's retry prompt still asks for JSON only ("no commentary"). Use `max_retries=0` if you want reasoning on every attempt.
+- It is slower: about 1.8 times the plain call's latency on Qwen 7B.
+- It did not help trivia or multiple-choice questions in these runs.
+- A caller-supplied prompt suffix is being considered for a later release (#33).
+
+**Seen in:** [`examples/Vedantgitbot_latency_accuracy`](examples/Vedantgitbot_latency_accuracy), issues [#32](https://github.com/Vedantgitbot/booth/issues/32) and [#33](https://github.com/Vedantgitbot/booth/issues/33).

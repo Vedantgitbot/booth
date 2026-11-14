@@ -70,6 +70,8 @@ else:
 
 An accepted result means the configured checks passed. It does not prove that the answer is factually correct.
 
+BOOTH asks the model for a JSON-only reply. On reasoning-heavy tasks, small local models can lose accuracy because of that, so measure against a plain call on your own model first. See [Troubleshooting entry 10](https://github.com/Vedantgitbot/booth/blob/main/TROUBLESHOOTING.md#10-accuracy-drops-on-reasoning-heavy-tasks-maths-multi-step-questions) and the [latency and accuracy benchmark](https://github.com/Vedantgitbot/booth/tree/main/examples/Vedantgitbot_latency_accuracy).
+
 ### Provider-native response formats
 
 By default BOOTH extracts a JSON object from the model's text. If your provider returns a different string format, pass a synchronous `parse_fn` that turns that string into a dictionary containing `answer` and `confidence`:

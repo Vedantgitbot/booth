@@ -1,6 +1,6 @@
 # BOOTH Tutorial
 
-A practical guide to BOOTH's public API and how each function, type, property, and method works. This version documents `v0.5.8`.
+A practical guide to BOOTH's public API and how each function, type, property, and method works. This version documents `v0.5.9`.
 
 BOOTH is a lightweight checkpoint layer for LLM outputs. It takes an LLM call, evaluates the returned response for parsing, ambiguity, confidence, and optional application-specific validation, and gives your application a structured `BoothResult`.
 
@@ -152,7 +152,7 @@ If `call_fn` returns something that is not a string (`None`, a dictionary, a lis
 result = booth.check(call_llm, "Explain how TCP works.")
 ```
 
-The prompt can be any application-specific LLM instruction. BOOTH appends its own instructions asking the model for a JSON object with `ambiguous`, `interpretations`, `chosen_interpretation`, `answer`, and `confidence`.
+The prompt can be any application-specific LLM instruction. BOOTH appends its own instructions asking the model for a JSON object with `ambiguous`, `interpretations`, `chosen_interpretation`, `answer`, and `confidence`. How BOOTH finds that object in the reply is described in §3.8. On reasoning-heavy tasks the JSON-only instruction can cost accuracy with small models; see TROUBLESHOOTING entry 10.
 
 As of `v0.5.2`, a non-`str` `prompt` raises `TypeError` immediately:
 
@@ -362,7 +362,7 @@ result = booth.check(
 
 ### What changes and what does not
 
-- **Replaces extraction.** When `parse_fn` is supplied it fully replaces BOOTH's regex and `raw_decode` extraction. It is not layered on top of it.
+- **Replaces extraction.** When `parse_fn` is supplied it fully replaces BOOTH's default JSON extraction (§3.8). It is not layered on top of it.
 - **Same validation.** The returned dictionary follows the rules of a normally parsed response. `answer` and `confidence` are required, `confidence` must be a number in `[0.0, 1.0]` (a boolean is rejected), a `dict` or `list` `answer` is rejected, an empty `answer` is rejected unless the attempt is ambiguous, and `ambiguous` is coerced from a boolean or `"true"`/`"false"`. Extra fields stay available in `result.parsed`.
 - **Same pipeline.** The result feeds the existing validator, retry, confidence, ambiguity, and `BoothResult` handling.
 - **The prompt is unchanged.** BOOTH still appends its JSON instructions to your prompt. `parse_fn` changes parsing only.
@@ -383,6 +383,30 @@ booth.check(call_llm, "q", parse_fn="not-callable")
 Resolve asynchronous provider decoding before calling BOOTH.
 
 `parse_fn=None` (the default) is a true no-op, and `parse_fn` is not used by `check_with_evidence()`.
+
+---
+
+## 3.8 How the default parser picks the JSON object
+
+When no `parse_fn` is given, BOOTH looks for the JSON object in the model's reply with these rules (`v0.5.9`):
+
+- **The object can be anywhere.** Prose, reasoning, or code fences before or after it are fine.
+- **Only top-level objects are candidates.** An object nested inside another object (for example under a `"meta"` key) is never used on its own.
+- **The last valid top-level object wins.** If the reply holds a draft object followed by a final one, the final one is used. A later object that is invalid (missing `answer`, bad `confidence`) does not hide an earlier valid one.
+- **The outer object decides.** If the only top-level object is invalid, for example its `answer` is a dict, the attempt is a parse failure and the retry prompt fires. A valid-looking object nested inside it does not rescue it.
+- **Braces in text are harmless.** Text such as `\frac{1}{2}` or `{x}` is not a JSON object and is skipped, and braces inside a JSON string value are ordinary content.
+- **Failures name the last object.** When several objects are invalid, `attempt.error` describes the last one in the reply.
+- **Very deep nesting is a parse failure.** JSON nested deeper than 1024 levels is rejected (since `v0.5.8`).
+
+Before `v0.5.9` the first valid object was used, and a nested object could be picked instead of its invalid parent.
+
+```text
+Let me work it out: 12 * 4 = 48, half is 24.
+{"ambiguous": false, "interpretations": [], "chosen_interpretation": null,
+ "answer": "24", "confidence": 0.95}
+```
+
+BOOTH uses the object on the last two lines and ignores the working above it.
 
 ---
 
@@ -1373,7 +1397,7 @@ The status constants are `ACCEPTED`, `REPAIRED`, `AMBIGUOUS`, `UNCERTAIN`, and `
 
 ---
 
-# 30. Quick Reference (v0.5.2 to v0.5.8)
+# 30. Quick Reference (v0.5.2 to v0.5.9)
 
 ## Functions
 

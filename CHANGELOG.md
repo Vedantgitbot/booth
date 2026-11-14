@@ -6,6 +6,7 @@ changes bump the minor version; small fixes/polish with no new public
 surface bump the patch version.
 
 ## [Unreleased]
+
 ## [v0.5.9] — parser: the last valid top-level JSON object wins, nested objects are ignored
 
 No public API change and no change to the default prompt. Two parser behaviours change, both for replies that contain more than one JSON object.
@@ -20,10 +21,15 @@ No public API change and no change to the default prompt. Two parser behaviours 
 
 ### Tests
 - Parser regression tests for candidate order, nested objects, fallback behaviour, retries and `acheck()` (#35, thanks @rk042).
+- `test_v049_regressions.py` now imports `_iter_top_level_objects`.
+
+### Examples (no library change)
+- `examples/Vedantgitbot_latency_accuracy/`: a latency and accuracy benchmark of plain calls against BOOTH, with a no-gate arm and a reasoning-room arm. Findings are in its `RESULTS.md` (see #32, #33).
 
 ### Docs
-- README: Featured section and contributor thanks.
-- TROUBLESHOOTING: accuracy on reasoning-heavy tasks, with a recipe (see #32, #33).
+- README: Featured section, contributor thanks, and a note on accuracy with reasoning-heavy tasks.
+- TUTORIAL: new §3.8 on how the default parser picks the JSON object; version references updated.
+- TROUBLESHOOTING: new entry 10, accuracy on reasoning-heavy tasks, with a workaround recipe.
 
 ## [v0.5.8] — malformed numeric and deeply nested model output no longer crashes check()/acheck()
 
