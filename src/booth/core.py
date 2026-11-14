@@ -1,6 +1,5 @@
 import inspect
 import json
-import re
 from dataclasses import asdict, dataclass, field
 from typing import Any, Awaitable, Callable, Iterable, List, Optional, Sequence, Tuple, Union
 
@@ -43,8 +42,6 @@ answer under your best-guess interpretation, and name it in \
 not pad the confidence toward 1.0 out of politeness — under-confidence \
 and over-confidence are both penalized. Output ONLY the JSON object, \
 nothing else."""
-
-_JSON_RE = re.compile(r"\{[^{}]*\}")
 
 _MISSING = object()  # tells "key absent" apart from "key present but invalid"
 
@@ -233,29 +230,24 @@ def _build_validation_failure_prompt(original_prompt: str, previous: Attempt) ->
     )
 
 
-def _try_json(candidate: str) -> Optional[dict]:
-    try:
-        obj = json.loads(candidate)
-    except (ValueError, TypeError, OverflowError, RecursionError):
-        return None
-    return obj if isinstance(obj, dict) else None
+def _iter_top_level_objects(text: str):
+    """Yield each top-level JSON object in the text, in order of appearance.
 
-
-def _iter_raw_decoded_objects(text: str):
-    """Yield every JSON object that starts at a '{' in the text.
-
-    The flat regex can't handle braces inside string values, raw_decode can.
+    Uses raw_decode at every '{' so braces inside string values are handled.
+    Objects nested inside an object that decoded successfully are skipped, so a
+    nested {"answer": ..., "confidence": ...} is never mistaken for the response.
     """
     decoder = json.JSONDecoder()
-    for idx, ch in enumerate(text):
-        if ch != "{":
-            continue
+    idx = text.find("{")
+    while idx != -1:
         try:
-            obj, _ = decoder.raw_decode(text, idx)
+            obj, end = decoder.raw_decode(text, idx)
         except (ValueError, OverflowError, RecursionError):
+            idx = text.find("{", idx + 1)
             continue
         if isinstance(obj, dict):
             yield obj
+        idx = text.find("{", end)
 
 
 def _exceeds_json_nesting_limit(text: str, limit: int = 1024) -> bool:
@@ -368,40 +360,24 @@ def _parse_response(raw_text: str) -> Attempt:
     if _exceeds_json_nesting_limit(raw_text):
         return _failed_parse_attempt(raw_text, "JSON nesting exceeds the safe parser limit")
 
-    candidates: List[Union[str, dict]] = []
-
-    stripped = raw_text.strip()
-    if stripped.startswith("{") and stripped.endswith("}"):
-        candidates.append(stripped)
-
-    lines = [ln.strip() for ln in raw_text.splitlines() if ln.strip()]
-    if lines:
-        candidates.append(lines[-1])
-
-    candidates.extend(_JSON_RE.findall(raw_text))
-    candidates.extend(_iter_raw_decoded_objects(raw_text))
-
-    last_reason: Optional[str] = None  # why the last candidate was rejected
-
-    for candidate in candidates:
-        obj = candidate if isinstance(candidate, dict) else _try_json(candidate)
-        if obj is None:
-            if last_reason is None:
-                last_reason = "no candidate contained a valid JSON object"
-            continue
-
+    # The last valid top-level JSON object wins. Nested objects are never
+    # candidates. If no object is valid, the error describes why the last one
+    # (the one closest to the end of the reply) was rejected.
+    last_reason: Optional[str] = None
+    for obj in reversed(list(_iter_top_level_objects(raw_text))):
         attempt, error = _attempt_from_parsed(obj, raw_text)
         if attempt is not None:
             return attempt
-        last_reason = error
+        if last_reason is None:
+            last_reason = error
 
-    return Attempt(
-        raw_text=raw_text,
-        answer=None,
-        confidence=None,
-        parse_ok=False,
-        error=last_reason or "no JSON object could be extracted from the response",
-    )
+    if last_reason is None:
+        last_reason = (
+            "no candidate contained a valid JSON object"
+            if raw_text.strip()
+            else "no JSON object could be extracted from the response"
+        )
+    return _failed_parse_attempt(raw_text, last_reason)
 
 
 def _is_boolish(value) -> bool:
