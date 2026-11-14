@@ -29,7 +29,7 @@ import json
 import pytest
 
 import booth
-from booth.core import check_with_evidence, _is_empty_evidence, _iter_raw_decoded_objects
+from booth.core import check_with_evidence, _is_empty_evidence, _iter_top_level_objects
 
 
 def _run(coro):
@@ -123,9 +123,9 @@ def test_genuinely_malformed_outer_json_still_fails_safe():
     assert r.all_parse_failed is True
 
 
-def test_iter_raw_decoded_objects_finds_object_regardless_of_position():
+def test_iter_top_level_objects_finds_object_regardless_of_position():
     text = 'noise before {"a": 1, "b": {"nested": true}} noise after'
-    found = list(_iter_raw_decoded_objects(text))
+    found = list(_iter_top_level_objects(text))
     assert {"a": 1, "b": {"nested": True}} in found
 
 
