@@ -6,6 +6,24 @@ changes bump the minor version; small fixes/polish with no new public
 surface bump the patch version.
 
 ## [Unreleased]
+## [v0.5.9] — parser: the last valid top-level JSON object wins, nested objects are ignored
+
+No public API change and no change to the default prompt. Two parser behaviours change, both for replies that contain more than one JSON object.
+
+### Changed
+- **The last valid top-level JSON object now wins.** When a reply contains several objects (for example a draft followed by a final answer), BOOTH used the first valid one. It now uses the last.
+- **Nested objects are no longer candidates.** A nested object with its own `answer` and `confidence` (for example inside `"meta"`) could replace the outer object's values, and an outer object rejected for a dict `answer` could be rescued by a nested one. Now the outer object decides: if it is invalid, the attempt is a parse failure and the retry fires.
+- **Parse errors describe the last object** in the reply when several are invalid.
+
+### Internal
+- `_iter_raw_decoded_objects` is now `_iter_top_level_objects`. `_JSON_RE` and `_try_json` are removed.
+
+### Tests
+- Parser regression tests for candidate order, nested objects, fallback behaviour, retries and `acheck()` (#35, thanks @rk042).
+
+### Docs
+- README: Featured section and contributor thanks.
+- TROUBLESHOOTING: accuracy on reasoning-heavy tasks, with a recipe (see #32, #33).
 
 ## [v0.5.8] — malformed numeric and deeply nested model output no longer crashes check()/acheck()
 
@@ -942,8 +960,9 @@ inspection, and every fix has a dedicated regression test.
   (not blind resampling) when confidence is below a configurable
   threshold. `VERIFIED` / `REPAIRED` / `UNCERTAIN` statuses.
 
-[Unreleased]: https://github.com/Vedantgitbot/booth/compare/v0.5.8...HEAD
+[Unreleased]: https://github.com/Vedantgitbot/booth/compare/v0.5.9...HEAD
 
+[v0.5.9]: https://github.com/Vedantgitbot/booth/releases/tag/v0.5.9
 [v0.5.8]: https://github.com/Vedantgitbot/booth/releases/tag/v0.5.8
 [v0.5.7]: https://github.com/Vedantgitbot/booth/releases/tag/v0.5.7
 [v0.5.6]: https://github.com/Vedantgitbot/booth/releases/tag/v0.5.6
