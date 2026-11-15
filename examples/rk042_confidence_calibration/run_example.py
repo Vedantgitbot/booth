@@ -2,7 +2,7 @@
 
 Uses a custom short prompt and Ollama's JSON schema. BOOTH evaluates the cached
 model response; BOOTH's default prompt is not sent to the model. Stdlib plus
-boothpy 0.5.8; Ollama and the model must already be installed. Results are
+boothpy; Ollama and the model must already be installed. Results are
 saved under output/; no questions or model calls require internet access.
 """
 import json
@@ -147,7 +147,8 @@ def summarize(records, planned):
 def main():
     version = metadata.version('boothpy')
     if version != '0.5.8':
-        sys.exit(f'This study uses boothpy 0.5.8; found {version}.')
+        print(f'Warning: the documented study used boothpy 0.5.8; '
+              f'this run uses {version}. Results may differ.', file=sys.stderr, flush=True)
     try:
         server = request_json('/api/version')['version']
         model = next(m for m in request_json('/api/tags')['models'] if m.get('name') == MODEL)

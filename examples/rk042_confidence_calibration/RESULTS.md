@@ -1,5 +1,10 @@
 # Confidence calibration on local arithmetic
 
+The model receives a custom short prompt plus an Ollama JSON schema; BOOTH
+only parses and evaluates the saved model reply. These results describe the
+model's stated confidence under constrained decoding, not BOOTH's default
+prompt flow.
+
 ## 30-question study: observed results
 
 Run 2026-11-15, UTC; 30 planned and attempted calls, 514.1 seconds. All 30
@@ -8,6 +13,10 @@ There were 27 scoreable answers: **12 correct and 15 wrong**. Three were
 excluded under the pre-specified integer-only rule. Among scoreable responses,
 all reported confidence 1.0; accuracy was 12/27 = 0.444 and the ten-bin ECE
 was 15/27 = 0.556. These describe this sample, not general model calibration.
+
+Final run environment: boothpy 0.5.8, Ollama 0.24.0, Python 3.12.3,
+Linux 7.0.0-43-generic x86_64 (glibc 2.39), and qwen2.5-coder:7b with digest
+`dae161e27b0e90dd1856c8bb3209201fd6736d8eb66298e75ed87571486f4364`.
 
 ```text
 Planned: 30; attempted: 30; eligible: 27; excluded: 3
@@ -46,7 +55,9 @@ full records and manifest are in ignored `output/20261115T045922348251Z/`.
 
 ## Setup
 
-- Python 3.9+, `boothpy==0.5.8`, Ollama, and the `qwen2.5-coder:7b` model.
+- Python 3.9+, `boothpy`, Ollama, and the `qwen2.5-coder:7b` model. The
+  recorded run used boothpy 0.5.8. Other installed versions are recorded in
+  the manifest, and the script warns that results may differ.
 - Standard-library HTTP; no new BOOTH dependencies. The questions are
   self-authored integer arithmetic and their labels are computed locally.
 - Fixed 30-question study, temperature 0.2, seed 101, no retries. The 30
@@ -70,7 +81,7 @@ From this folder, after installing Ollama and the model:
 
 ```bash
 python3 -m venv .venv
-.venv/bin/python -m pip install boothpy==0.5.8
+.venv/bin/python -m pip install boothpy
 .venv/bin/python run_example.py
 ```
 
