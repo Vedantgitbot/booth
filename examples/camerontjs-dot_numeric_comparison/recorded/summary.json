@@ -1,0 +1,179 @@
+{
+  "authored_controls": {
+    "check": {
+      "attempted": 40,
+      "correct": 20,
+      "wrong": 20,
+      "unscoreable": 0,
+      "no_answer": 0,
+      "correct_accepted": 20,
+      "correct_withheld": 0,
+      "wrong_accepted": 20,
+      "wrong_withheld": 0,
+      "unscoreable_accepted": 0,
+      "unscoreable_withheld": 0,
+      "no_answer_accepted": 0,
+      "no_answer_withheld": 0,
+      "call_failed": 0,
+      "all_parse_failed": 0,
+      "checker_failed": 0,
+      "statuses": {
+        "ACCEPTED": 40
+      }
+    },
+    "validator": {
+      "attempted": 40,
+      "correct": 20,
+      "wrong": 20,
+      "unscoreable": 0,
+      "no_answer": 0,
+      "correct_accepted": 20,
+      "correct_withheld": 0,
+      "wrong_accepted": 0,
+      "wrong_withheld": 20,
+      "unscoreable_accepted": 0,
+      "unscoreable_withheld": 0,
+      "no_answer_accepted": 0,
+      "no_answer_withheld": 0,
+      "call_failed": 0,
+      "all_parse_failed": 0,
+      "checker_failed": 0,
+      "statuses": {
+        "ACCEPTED": 20,
+        "UNCERTAIN": 20
+      }
+    },
+    "keyword_evidence": {
+      "attempted": 40,
+      "correct": 20,
+      "wrong": 20,
+      "unscoreable": 0,
+      "no_answer": 0,
+      "correct_accepted": 17,
+      "correct_withheld": 3,
+      "wrong_accepted": 20,
+      "wrong_withheld": 0,
+      "unscoreable_accepted": 0,
+      "unscoreable_withheld": 0,
+      "no_answer_accepted": 0,
+      "no_answer_withheld": 0,
+      "call_failed": 0,
+      "all_parse_failed": 0,
+      "checker_failed": 0,
+      "statuses": {
+        "ACCEPTED": 37,
+        "BLOCKED": 3
+      }
+    },
+    "numeric_evidence": {
+      "attempted": 40,
+      "correct": 20,
+      "wrong": 20,
+      "unscoreable": 0,
+      "no_answer": 0,
+      "correct_accepted": 20,
+      "correct_withheld": 0,
+      "wrong_accepted": 0,
+      "wrong_withheld": 20,
+      "unscoreable_accepted": 0,
+      "unscoreable_withheld": 0,
+      "no_answer_accepted": 0,
+      "no_answer_withheld": 0,
+      "call_failed": 0,
+      "all_parse_failed": 0,
+      "checker_failed": 0,
+      "statuses": {
+        "ACCEPTED": 20,
+        "BLOCKED": 20
+      }
+    }
+  },
+  "live_gemma": {
+    "check": {
+      "attempted": 20,
+      "correct": 19,
+      "wrong": 1,
+      "unscoreable": 0,
+      "no_answer": 0,
+      "correct_accepted": 19,
+      "correct_withheld": 0,
+      "wrong_accepted": 1,
+      "wrong_withheld": 0,
+      "unscoreable_accepted": 0,
+      "unscoreable_withheld": 0,
+      "no_answer_accepted": 0,
+      "no_answer_withheld": 0,
+      "call_failed": 0,
+      "all_parse_failed": 0,
+      "checker_failed": 0,
+      "statuses": {
+        "ACCEPTED": 20
+      }
+    },
+    "validator": {
+      "attempted": 20,
+      "correct": 19,
+      "wrong": 1,
+      "unscoreable": 0,
+      "no_answer": 0,
+      "correct_accepted": 19,
+      "correct_withheld": 0,
+      "wrong_accepted": 0,
+      "wrong_withheld": 1,
+      "unscoreable_accepted": 0,
+      "unscoreable_withheld": 0,
+      "no_answer_accepted": 0,
+      "no_answer_withheld": 0,
+      "call_failed": 0,
+      "all_parse_failed": 0,
+      "checker_failed": 0,
+      "statuses": {
+        "ACCEPTED": 19,
+        "UNCERTAIN": 1
+      }
+    },
+    "keyword_evidence": {
+      "attempted": 20,
+      "correct": 19,
+      "wrong": 1,
+      "unscoreable": 0,
+      "no_answer": 0,
+      "correct_accepted": 19,
+      "correct_withheld": 0,
+      "wrong_accepted": 1,
+      "wrong_withheld": 0,
+      "unscoreable_accepted": 0,
+      "unscoreable_withheld": 0,
+      "no_answer_accepted": 0,
+      "no_answer_withheld": 0,
+      "call_failed": 0,
+      "all_parse_failed": 0,
+      "checker_failed": 0,
+      "statuses": {
+        "ACCEPTED": 20
+      }
+    },
+    "numeric_evidence": {
+      "attempted": 20,
+      "correct": 19,
+      "wrong": 1,
+      "unscoreable": 0,
+      "no_answer": 0,
+      "correct_accepted": 19,
+      "correct_withheld": 0,
+      "wrong_accepted": 0,
+      "wrong_withheld": 1,
+      "unscoreable_accepted": 0,
+      "unscoreable_withheld": 0,
+      "no_answer_accepted": 0,
+      "no_answer_withheld": 0,
+      "call_failed": 0,
+      "all_parse_failed": 0,
+      "checker_failed": 0,
+      "statuses": {
+        "ACCEPTED": 19,
+        "BLOCKED": 1
+      }
+    }
+  }
+}

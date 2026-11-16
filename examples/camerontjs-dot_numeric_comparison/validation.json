@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "scope": "Frozen source tests and independently reconstructed saved-run consistency; not blind qualification",
+  "tests": {
+    "pytest_tests_passed": 464,
+    "pytest_tests_skipped": 6,
+    "subtests_passed": 155,
+    "junit_cases_including_subtests": {
+      "tests": 625,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 6,
+      "passed": 619
+    }
+  },
+  "test_command": "python -m pytest tests examples/camerontjs-dot_numeric_comparison/test_example.py examples/camerontjs-dot_numeric_comparison/test_grading.py -v",
+  "test_xml_sha256": "6b199acb98640d09b8b596587c32d7fe35890ae57e469f18dc3cb2966fc7bab5",
+  "audit": {
+    "status": "PASS",
+    "checks": 1026,
+    "findings": 0,
+    "receipt": "recorded/audit.json",
+    "sha256": "2928bbda94f56c6a81198e7d82e5b5642b54815f9046f21403502e55e8b5835d"
+  },
+  "main_artifacts_byte_equal": true,
+  "new_runtime_dependencies": []
+}

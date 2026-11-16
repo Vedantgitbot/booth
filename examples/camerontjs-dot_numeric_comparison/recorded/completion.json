@@ -1,0 +1,8 @@
+{
+  "status": "completed",
+  "finished_utc": "2026-11-16T18:32:54.753537+00:00",
+  "elapsed_s": 170.20771004108246,
+  "live_case_calls": 20,
+  "warmup_calls": 1,
+  "records": 60
+}
