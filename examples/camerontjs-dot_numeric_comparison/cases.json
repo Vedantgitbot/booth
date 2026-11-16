@@ -1,0 +1,330 @@
+{
+  "schema": 1,
+  "provenance": "Synthetic cases authored with Codex before inference; controls are not model outputs.",
+  "cases": [
+    {
+      "id": "invoice_total",
+      "category": "wrong_field",
+      "source": "Synthetic invoice A\nSubtotal: 1200.00 CAD\nTax: 156.00 CAD\nInvoice total: 1356.00 CAD",
+      "target": "Invoice total",
+      "question": "What is \"Invoice total\"? Give one number followed by its explicit unit or currency; a scale such as thousand or million is allowed.",
+      "round_places": null,
+      "reference": {
+        "value": "1356",
+        "unit": "CAD"
+      },
+      "correct_answer": "1356.00 CAD",
+      "wrong_answer": "1200.00 CAD"
+    },
+    {
+      "id": "amount_due",
+      "category": "wrong_field",
+      "source": "Synthetic statement B\nDeposit: 100.00 EUR\nAmount due: 42.75 EUR",
+      "target": "Amount due",
+      "question": "What is \"Amount due\"? Give one number followed by its explicit unit or currency; a scale such as thousand or million is allowed.",
+      "round_places": null,
+      "reference": {
+        "value": "42.75",
+        "unit": "EUR"
+      },
+      "correct_answer": "EUR 42.75",
+      "wrong_answer": "100.00 EUR"
+    },
+    {
+      "id": "negative_cash_flow",
+      "category": "sign",
+      "source": "Synthetic statement C\nOperating inflow: 80.00 USD\nNet cash flow: -42.50 USD",
+      "target": "Net cash flow",
+      "question": "What is \"Net cash flow\"? Give one number followed by its explicit unit or currency; a scale such as thousand or million is allowed.",
+      "round_places": null,
+      "reference": {
+        "value": "-42.50",
+        "unit": "USD"
+      },
+      "correct_answer": "(42.50) USD",
+      "wrong_answer": "42.50 USD"
+    },
+    {
+      "id": "negative_credit",
+      "category": "sign",
+      "source": "Synthetic statement D\nCredit adjustment: -125.00 CAD\nPrevious balance: 200.00 CAD",
+      "target": "Credit adjustment",
+      "question": "What is \"Credit adjustment\"? Give one number followed by its explicit unit or currency; a scale such as thousand or million is allowed.",
+      "round_places": null,
+      "reference": {
+        "value": "-125",
+        "unit": "CAD"
+      },
+      "correct_answer": "-125.00 CAD",
+      "wrong_answer": "125.00 CAD"
+    },
+    {
+      "id": "round_half_up",
+      "category": "rounding",
+      "source": "Synthetic invoice E\nUnit price: 12.345 CAD\nQuantity: 2 items",
+      "target": "Unit price",
+      "question": "What is \"Unit price\"? Round to 2 decimal places using half-up rounding. Give one number followed by its explicit unit or currency; a scale such as thousand or million is allowed.",
+      "round_places": 2,
+      "reference": {
+        "value": "12.35",
+        "unit": "CAD"
+      },
+      "correct_answer": "12.35 CAD",
+      "wrong_answer": "12.34 CAD"
+    },
+    {
+      "id": "round_even_trap",
+      "category": "rounding",
+      "source": "Synthetic invoice F\nService fee: 2.225 USD\nTax: 0.10 USD",
+      "target": "Service fee",
+      "question": "What is \"Service fee\"? Round to 2 decimal places using half-up rounding. Give one number followed by its explicit unit or currency; a scale such as thousand or million is allowed.",
+      "round_places": 2,
+      "reference": {
+        "value": "2.23",
+        "unit": "USD"
+      },
+      "correct_answer": "2.23 USD",
+      "wrong_answer": "2.22 USD"
+    },
+    {
+      "id": "round_down",
+      "category": "rounding",
+      "source": "Synthetic invoice G\nPacking fee: 9.994 EUR\nInsurance fee: 10.00 EUR",
+      "target": "Packing fee",
+      "question": "What is \"Packing fee\"? Round to 2 decimal places using half-up rounding. Give one number followed by its explicit unit or currency; a scale such as thousand or million is allowed.",
+      "round_places": 2,
+      "reference": {
+        "value": "9.99",
+        "unit": "EUR"
+      },
+      "correct_answer": "9.99 EUR",
+      "wrong_answer": "10.00 EUR"
+    },
+    {
+      "id": "round_negative",
+      "category": "rounding",
+      "source": "Synthetic adjustment H\nAdjustment: -2.225 CAD\nPrevious adjustment: -2.22 CAD",
+      "target": "Adjustment",
+      "question": "What is \"Adjustment\"? Round to 2 decimal places using half-up rounding. Give one number followed by its explicit unit or currency; a scale such as thousand or million is allowed.",
+      "round_places": 2,
+      "reference": {
+        "value": "-2.23",
+        "unit": "CAD"
+      },
+      "correct_answer": "-2.23 CAD",
+      "wrong_answer": "-2.22 CAD"
+    },
+    {
+      "id": "cad_not_usd",
+      "category": "currency",
+      "source": "Synthetic statement I\nCanadian balance: 800.00 CAD\nUS balance: 800.00 USD",
+      "target": "Canadian balance",
+      "question": "What is \"Canadian balance\"? Give one number followed by its explicit unit or currency; a scale such as thousand or million is allowed.",
+      "round_places": null,
+      "reference": {
+        "value": "800",
+        "unit": "CAD"
+      },
+      "correct_answer": "800.00 CAD",
+      "wrong_answer": "800.00 USD"
+    },
+    {
+      "id": "eur_not_usd",
+      "category": "currency",
+      "source": "Synthetic statement J\nEuro balance: 90.00 EUR\nUS balance: 90.00 USD",
+      "target": "Euro balance",
+      "question": "What is \"Euro balance\"? Give one number followed by its explicit unit or currency; a scale such as thousand or million is allowed.",
+      "round_places": null,
+      "reference": {
+        "value": "90",
+        "unit": "EUR"
+      },
+      "correct_answer": "90 EUR",
+      "wrong_answer": "90 USD"
+    },
+    {
+      "id": "million_scale",
+      "category": "scale",
+      "source": "Synthetic forecast K\nRevenue: 1.25 million CAD\nCosts: 1250.00 CAD",
+      "target": "Revenue",
+      "question": "What is \"Revenue\"? Give one number followed by its explicit unit or currency; a scale such as thousand or million is allowed.",
+      "round_places": null,
+      "reference": {
+        "value": "1250000",
+        "unit": "CAD"
+      },
+      "correct_answer": "1,250,000 CAD",
+      "wrong_answer": "1250 CAD"
+    },
+    {
+      "id": "thousand_scale",
+      "category": "scale",
+      "source": "Synthetic budget L\nBudget: 250 thousand USD\nApplication fee: 250 USD",
+      "target": "Budget",
+      "question": "What is \"Budget\"? Give one number followed by its explicit unit or currency; a scale such as thousand or million is allowed.",
+      "round_places": null,
+      "reference": {
+        "value": "250000",
+        "unit": "USD"
+      },
+      "correct_answer": "0.25 million USD",
+      "wrong_answer": "250 USD"
+    },
+    {
+      "id": "days_not_months",
+      "category": "unit",
+      "source": "Synthetic payment policy M\nPayment term: 30 days\nContract duration: 30 months",
+      "target": "Payment term",
+      "question": "What is \"Payment term\"? Give one number followed by its explicit unit or currency; a scale such as thousand or million is allowed.",
+      "round_places": null,
+      "reference": {
+        "value": "30",
+        "unit": "days"
+      },
+      "correct_answer": "30 days",
+      "wrong_answer": "30 months"
+    },
+    {
+      "id": "items_not_currency",
+      "category": "unit",
+      "source": "Synthetic invoice N\nLine quantity: 12 items\nUnit price: 12 CAD",
+      "target": "Line quantity",
+      "question": "What is \"Line quantity\"? Give one number followed by its explicit unit or currency; a scale such as thousand or million is allowed.",
+      "round_places": null,
+      "reference": {
+        "value": "12",
+        "unit": "items"
+      },
+      "correct_answer": "12 items",
+      "wrong_answer": "12 CAD"
+    },
+    {
+      "id": "percent_not_points",
+      "category": "percent_vs_points",
+      "source": "Synthetic discount policy O\nDiscount rate: 5 percent\nRate change: 5 percentage points",
+      "target": "Discount rate",
+      "question": "What is \"Discount rate\"? Give one number followed by its explicit unit or currency; a scale such as thousand or million is allowed.",
+      "round_places": null,
+      "reference": {
+        "value": "5",
+        "unit": "percent"
+      },
+      "correct_answer": "5%",
+      "wrong_answer": "5 percentage points"
+    },
+    {
+      "id": "points_not_percent",
+      "category": "percent_vs_points",
+      "source": "Synthetic rate notice P\nPrior rate: 3 percent\nNew rate: 5 percent\nRate change: 2 percentage points",
+      "target": "Rate change",
+      "question": "What is \"Rate change\"? Give one number followed by its explicit unit or currency; a scale such as thousand or million is allowed.",
+      "round_places": null,
+      "reference": {
+        "value": "2",
+        "unit": "percentage points"
+      },
+      "correct_answer": "2 percentage points",
+      "wrong_answer": "2 percent"
+    },
+    {
+      "id": "fraction_to_percent",
+      "category": "rate_conversion",
+      "source": "Synthetic policy Q\nInterest rate: 0.075 fraction\nService charge: 0.075 percent",
+      "target": "Interest rate",
+      "question": "What is \"Interest rate\"? Give one number followed by its explicit unit or currency; a scale such as thousand or million is allowed.",
+      "round_places": null,
+      "reference": {
+        "value": "7.5",
+        "unit": "percent"
+      },
+      "correct_answer": "7.5 percent",
+      "wrong_answer": "0.075 percent"
+    },
+    {
+      "id": "shipping_not_gross",
+      "category": "wrong_field",
+      "source": "Synthetic invoice R\nNet total: 500 CAD\nGross total: 565 CAD\nShipping fee: 25 CAD",
+      "target": "Shipping fee",
+      "question": "What is \"Shipping fee\"? Give one number followed by its explicit unit or currency; a scale such as thousand or million is allowed.",
+      "round_places": null,
+      "reference": {
+        "value": "25",
+        "unit": "CAD"
+      },
+      "correct_answer": "25 CAD",
+      "wrong_answer": "565 CAD"
+    },
+    {
+      "id": "account_scope",
+      "category": "wrong_field",
+      "source": "Synthetic account summary S\nAccount A balance: 80 CAD\nAccount B balance: 95 CAD",
+      "target": "Account A balance",
+      "question": "What is \"Account A balance\"? Give one number followed by its explicit unit or currency; a scale such as thousand or million is allowed.",
+      "round_places": null,
+      "reference": {
+        "value": "80",
+        "unit": "CAD"
+      },
+      "correct_answer": "80 CAD",
+      "wrong_answer": "95 CAD"
+    },
+    {
+      "id": "percent_not_fraction",
+      "category": "rate_conversion",
+      "source": "Synthetic rebate policy T\nRebate rate: 12.5 percent\nAdjustment ratio: 12.5 fraction",
+      "target": "Rebate rate",
+      "question": "What is \"Rebate rate\"? Give one number followed by its explicit unit or currency; a scale such as thousand or million is allowed.",
+      "round_places": null,
+      "reference": {
+        "value": "12.5",
+        "unit": "percent"
+      },
+      "correct_answer": "0.125 fraction",
+      "wrong_answer": "12.5 fraction"
+    }
+  ],
+  "smoke_cases": [
+    {
+      "id": "smoke_amount",
+      "category": "smoke",
+      "source": "Synthetic smoke invoice\nSmoke amount: 17.25 CAD",
+      "target": "Smoke amount",
+      "question": "What is \"Smoke amount\"? Give one number followed by its explicit unit or currency; a scale such as thousand or million is allowed.",
+      "round_places": null,
+      "reference": {
+        "value": "17.25",
+        "unit": "CAD"
+      },
+      "correct_answer": "17.25 CAD",
+      "wrong_answer": "17.25 USD"
+    },
+    {
+      "id": "smoke_sign",
+      "category": "smoke",
+      "source": "Synthetic smoke statement\nSmoke delta: -8.00 USD",
+      "target": "Smoke delta",
+      "question": "What is \"Smoke delta\"? Give one number followed by its explicit unit or currency; a scale such as thousand or million is allowed.",
+      "round_places": null,
+      "reference": {
+        "value": "-8",
+        "unit": "USD"
+      },
+      "correct_answer": "-8 USD",
+      "wrong_answer": "8 USD"
+    },
+    {
+      "id": "smoke_rate",
+      "category": "smoke",
+      "source": "Synthetic smoke policy\nSmoke rate: 0.125 fraction",
+      "target": "Smoke rate",
+      "question": "What is \"Smoke rate\"? Give one number followed by its explicit unit or currency; a scale such as thousand or million is allowed.",
+      "round_places": null,
+      "reference": {
+        "value": "12.5",
+        "unit": "percent"
+      },
+      "correct_answer": "12.5 percent",
+      "wrong_answer": "12.5 percentage points"
+    }
+  ]
+}
