@@ -1,8 +1,10 @@
 # Numeric checkpoints with local Gemma
 
-In this 20-question synthetic run, Gemma answered 19 questions correctly and missed one explicit rounding instruction. Plain `check()` and keyword evidence matching accepted that answer at confidence 1.0. The numeric validator withheld it as `UNCERTAIN`; the strict evidence comparator returned `BLOCKED`. Neither numeric setup withheld a correct live answer.
+The 20 source/question cases, their correct/wrong controls and the numeric rule were authored together. The rule's 20/20 result on wrong-answer controls is a development check. In the separate live Gemma run, one answer out of 20 was wrong: it missed an explicit half-up rounding instruction.
 
-This is the example for [issue #36](https://github.com/Vedantgitbot/booth/issues/36). Codex helped author the synthetic cases, implement the example, run local Gemma, and check the saved evidence. The source text deliberately uses labelled fields, and the application supplies the requested field. The numeric rule is a bounded source-field comparison, not a general financial-language solver. These results are not financial advice or a compliance check.
+Plain `check()` and keyword evidence matching accepted that live answer at confidence 1.0. The numeric validator withheld it as `UNCERTAIN`; the strict evidence comparator returned `BLOCKED`. Neither numeric setup withheld a correct live answer.
+
+This is the example for [issue #36](https://github.com/Vedantgitbot/booth/issues/36). Codex helped author the synthetic cases, implement the example, run local Gemma, and check the saved evidence. The source text deliberately uses labelled fields, and both numeric integrations are given the field label and rounding rule as case metadata. The numeric rule is a bounded source-field comparison, not a general financial-language solver. These results are not financial advice or a compliance check.
 
 ## What was compared
 
@@ -22,6 +24,8 @@ The rule parses the requested source field and checks exact value, unit/currency
 **Authored controls:** each of the 20 source/question cases has one correct and one wrong candidate. The 40 explicitly authored JSON fixtures have confidence 0.99 and ambiguous=false. Actual BOOTH functions execute on these fixtures, but they are not model replies or calibration evidence.
 
 On those controls, A accepted all 20 wrong answers. C also accepted all 20 wrong answers and blocked three correct answers involving equivalent rate/scale representations. B and D withheld all 20 wrong answers and accepted all 20 correct answers. These are designed development cases, not held-out estimates of general comparator accuracy.
+
+Those control outcomes follow from fixture construction. Every payload is parseable, has confidence 0.99 and ambiguous=false, so A accepts all 40. Every wrong candidate has enough answer-word coverage to pass C's 0.5 threshold; three correct equivalent representations fall below it. The live layer supplies the observed model behavior.
 
 **Live Gemma:** one real provider call per question, with each reply reused across the four checkpoints. All 20 replies were complete, parseable and scoreable; no responses were excluded. There were no call or checker failures. Only one live answer was wrong, so the observed wrong-answer catch count is one case, not an estimate of a dependable catch rate.
 
@@ -138,9 +142,9 @@ One authored synthetic demonstration, one model and one seed. The validator repl
 
 The unchanged BOOTH suite and the example's numeric, grading and failure-path tests passed: **464 passed, 6 skipped**. The additional tests exercise wrong-field and unit swaps, rounding boundaries, conflicting/missing source facts, backend disconnection, incomplete generations, and retention of partial or invalid-UTF-8 HTTP bytes.
 
-A separately implemented saved-run auditor read the protocol, fixtures, BOOTH core and records; it read runner/grader/test files as hash bytes only. Its 1,026 checks reproduced the grades, checkpoint decisions, raw-byte identities, call counts, case order, provenance and both summaries with zero findings. This is saved-run consistency checking, not blind scientific qualification.
+An independent audit was run on the saved evidence; its compact receipt is included. A separately implemented auditor reported 1,026 checks and zero findings covering grading, checkpoint decisions, raw-byte identities, call counts, case order, provenance and both summaries. The audit script and full receipt are retained locally; this example includes the receipt rather than a rerunnable audit script. This is saved-run consistency checking, not blind scientific qualification.
 
-**Verification receipt:** [recorded/audit.json](recorded/audit.json), SHA-256 `2928bbda94f56c6a81198e7d82e5b5642b54815f9046f21403502e55e8b5835d`. [Validation details](validation.json).
+**Verification receipt:** [recorded/audit.json](recorded/audit.json), SHA-256 `25afb79ac4d08870c75c5f8b27f13d707550ff5088ba8a588b934e581345c809`. [Validation details](validation.json).
 
 From a checkout containing this example, install BOOTH 0.5.9 in a clean Python environment and make the matching Ollama model available:
 
@@ -153,7 +157,7 @@ python examples/camerontjs-dot_numeric_comparison/run_example.py --smoke --expec
 python examples/camerontjs-dot_numeric_comparison/run_example.py --expected-digest f4031aab637d1ffa37b42570452ae0e4fad0314754d17ded67322e4b95836f8a --out examples/camerontjs-dot_numeric_comparison/output/main-001
 ```
 
-The original execution used the same flags with absolute local output directories. The checked-in files under `recorded/` are byte-for-byte copies of that main run, plus the audit receipt. Use fresh output paths; an existing directory is rejected. The three smoke questions are distinct from the main 20. No code, fixtures, thresholds or grading rules changed after inference began.
+The original execution used the same flags with absolute local output directories. The checked-in main-run files under `recorded/` are byte-for-byte copies of that run, accompanied by a compact summary of the separate audit receipt. Use fresh output paths; an existing directory is rejected. The three smoke questions are distinct from the main 20. No code, fixtures, thresholds or grading rules changed after inference began.
 
 ## Limits that matter
 

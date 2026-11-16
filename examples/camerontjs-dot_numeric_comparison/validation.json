@@ -20,7 +20,9 @@
     "checks": 1026,
     "findings": 0,
     "receipt": "recorded/audit.json",
-    "sha256": "2928bbda94f56c6a81198e7d82e5b5642b54815f9046f21403502e55e8b5835d"
+    "sha256": "25afb79ac4d08870c75c5f8b27f13d707550ff5088ba8a588b934e581345c809",
+    "full_receipt_sha256": "2928bbda94f56c6a81198e7d82e5b5642b54815f9046f21403502e55e8b5835d",
+    "script_included": false
   },
   "main_artifacts_byte_equal": true,
   "new_runtime_dependencies": []
