@@ -1,0 +1,18 @@
+{
+  "name": "gemma3:12b",
+  "digest": "f4031aab637d1ffa37b42570452ae0e4fad0314754d17ded67322e4b95836f8a",
+  "size": 8149190253,
+  "details": {
+    "parent_model": "",
+    "format": "gguf",
+    "family": "gemma3",
+    "families": [
+      "gemma3"
+    ],
+    "parameter_size": "12.2B",
+    "quantization_level": "Q4_K_M",
+    "context_length": 131072,
+    "embedding_length": 3840,
+    "runner": "ggml"
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "schema": 2,
+  "audit_kind": "independent_saved_run_consistency",
+  "audited_utc": "2026-11-16T18:33:15.685903+00:00",
+  "status": "PASS",
+  "scientific_qualification": false,
+  "checks": {
+    "total": 1026,
+    "passed": 1026,
+    "failed": 0
+  },
+  "failures": [],
+  "audit_script": {
+    "included": false,
+    "sha256": "45e16110eb1727c5c8e0f83a94435a73e9057f1ff2f4911510a0c4437b33837a"
+  },
+  "full_receipt_sha256": "2928bbda94f56c6a81198e7d82e5b5642b54815f9046f21403502e55e8b5835d",
+  "evidence_sha256": {
+    "completion.json": "2323712a484763b4dd6a96927a0bc0552a0a9f921dadb5a2a01adccfe242f8ac",
+    "manifest.json": "1c27006776eb9d5554ae76de96e8a83e6a688d9b4a05ae88fea92cc6b8a2f5e0",
+    "model_after.json": "ae2999f4426294d9b2aa2947fefc534ac2e942daa0c44dded5c953fe93f4d3d0",
+    "provider_calls.jsonl": "981d63ee9d5016e6beab8f456248584faa3985b1a640ff351e6b3bee08f53611",
+    "records.jsonl": "dd23d9b2c8635f1b062dd7ad8e6b324fcf52c28a52469aebebbcaa90ce4115ad",
+    "summary.json": "fc578e1b66f9ce383297b3671c846f5b870fee44771378b1c82e3bee909da1df",
+    "summary.md": "35ea37a4cc4b1d71c7db0d2c3c45bdd0e1e1df1ad1e1d849b113bbd244e61f4a"
+  }
+}
