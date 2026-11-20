@@ -66,6 +66,43 @@ def test_blocked_float_below_threshold():
     print("PASS: float score below threshold -> BLOCKED")
 
 
+def test_score_equal_to_threshold_is_accepted():
+    """Only a score *below* evidence_threshold is BLOCKED (TUTORIAL 7.5),
+    so a score exactly at the threshold must pass."""
+    r = bth.check_with_evidence(
+        answer="Paris is the capital of France",
+        evidence=["The capital of France is Paris"],
+        compare_fn=lambda answer, evidence: 0.8,
+        evidence_threshold=0.8,
+    )
+    assert r.status == bth.ACCEPTED, r.status
+    assert r.confidence == 0.8
+    print("PASS: score equal to evidence_threshold -> ACCEPTED")
+
+
+class _FakeNumpyFloat(float):
+    """Stand-in for numpy.float64 without a numpy dependency: a numeric
+    numpy type that is not a bool, so it must be compared against
+    evidence_threshold rather than treated as pass/fail."""
+
+
+_FakeNumpyFloat.__module__ = "numpy"
+_FakeNumpyFloat.__qualname__ = "float64"
+_FakeNumpyFloat.__name__ = "float64"
+
+
+def test_numpy_float_score_is_compared_not_treated_as_bool():
+    r = bth.check_with_evidence(
+        answer="Tokyo is the capital of France",
+        evidence=["France's capital city is Paris."],
+        compare_fn=lambda answer, evidence: _FakeNumpyFloat(0.5),
+        evidence_threshold=0.8,
+    )
+    assert r.status == bth.BLOCKED, r.status
+    assert r.reason == bth.EVIDENCE_DISAGREES, r.reason
+    print("PASS: numpy.float64-shaped score below threshold -> BLOCKED, not a bool pass")
+
+
 def test_accepted_bool_true():
     r = bth.check_with_evidence(
         answer="paris",
@@ -212,6 +249,8 @@ def test_threshold_and_evidence_threshold_are_independent():
 if __name__ == "__main__":
     test_accepted_float_above_threshold()
     test_blocked_float_below_threshold()
+    test_score_equal_to_threshold_is_accepted()
+    test_numpy_float_score_is_compared_not_treated_as_bool()
     test_accepted_bool_true()
     test_bool_false_bypasses_threshold_even_at_zero()
     test_empty_answer_is_uncertain()
