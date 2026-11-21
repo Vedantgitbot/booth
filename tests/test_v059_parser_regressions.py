@@ -6,6 +6,7 @@ import json
 import pytest
 
 import booth
+from booth.core import _iter_top_level_objects, _parse_response
 
 
 EARLY = '{"answer": "early", "confidence": 0.9}'
@@ -175,3 +176,36 @@ def test_acheck_invalid_outer_retries_without_using_inner_answer():
     assert result.attempts[0].parse_ok is False
     assert result.attempts[0].call_failed is False
     assert "could not be parsed" in prompts[1]
+
+
+DOUBLED_BRACES = '{{"answer": "A", "confidence": 0.9}}'
+NO_JSON_EXTRACTED = "no JSON object could be extracted from the response"
+
+
+def test_iter_top_level_objects_handles_doubled_braces():
+    # A reply that copies a str.format-escaped example: the first "{" fails to
+    # decode, and the one right after it must still be tried.
+    assert list(_iter_top_level_objects(DOUBLED_BRACES)) == [
+        {"answer": "A", "confidence": 0.9}
+    ]
+
+
+def test_parse_response_reads_doubled_braces():
+    attempt = _parse_response(DOUBLED_BRACES)
+    assert attempt.parse_ok is True
+    assert attempt.answer == "A"
+    assert attempt.confidence == 0.9
+
+
+@pytest.mark.parametrize("raw", ["", "  \n\t "])
+def test_empty_or_whitespace_reply_reports_no_json_extracted(raw):
+    attempt = _parse_response(raw)
+    assert attempt.parse_ok is False
+    assert attempt.error == NO_JSON_EXTRACTED
+
+
+def test_prose_without_braces_keeps_its_current_message():
+    # Pins today's wording, so a change to it is deliberate.
+    attempt = _parse_response("The answer is probably yes.")
+    assert attempt.parse_ok is False
+    assert attempt.error == "no candidate contained a valid JSON object"
