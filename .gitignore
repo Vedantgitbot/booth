@@ -37,3 +37,6 @@ htmlcov/
 # OS cruft
 .DS_Store
 Thumbs.db
+
+# Local tool output (qikly mutation-score reports)
+qikly-suite-score/
