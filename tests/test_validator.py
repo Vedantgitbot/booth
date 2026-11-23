@@ -97,10 +97,10 @@ def test_validator_invalid_return_type_treated_as_failure():
     print("PASS: validator returning a non-bool/tuple type -> treated as failure, no crash")
 
 
-def test_validator_never_runs_on_ambiguous_attempt():
-    """The key ordering guarantee: an attempt flagged ambiguous must
-    never even be handed to the validator — confirmed by call count,
-    not just by final status."""
+def test_validator_runs_on_ambiguous_attempt_without_changing_status():
+    """Since 0.6.0 the validator runs on ambiguous attempts too, so an
+    ambiguous answer is never silently unvalidated. The status stays
+    AMBIGUOUS and ok stays False."""
     calls = {"n": 0}
     def spy_validator(a):
         calls["n"] += 1
@@ -110,8 +110,8 @@ def test_validator_never_runs_on_ambiguous_attempt():
                             "chosen_interpretation": "a", "answer": "x", "confidence": 0.9})
     r = bth.check(call_fn, "q", validator=spy_validator)
     assert r.status == bth.AMBIGUOUS
-    assert calls["n"] == 0, "validator must never be called for an ambiguous attempt"
-    print("PASS: validator is never invoked on an ambiguous attempt (0 calls)")
+    assert r.ok is False
+    assert calls["n"] == 1
 
 
 def test_validator_never_runs_on_parse_failure():
@@ -224,7 +224,7 @@ def test_async_validator_parity_fail_then_repaired():
     print("PASS: acheck() validation fail-then-pass -> REPAIRED")
 
 
-def test_async_validator_never_runs_on_ambiguous():
+def test_async_validator_runs_on_ambiguous_without_changing_status():
     calls = {"n": 0}
     def spy_validator(a):
         calls["n"] += 1
@@ -234,8 +234,8 @@ def test_async_validator_never_runs_on_ambiguous():
                             "chosen_interpretation": "a", "answer": "x", "confidence": 0.9})
     r = asyncio.run(bth.acheck(call_fn, "q", validator=spy_validator))
     assert r.status == bth.AMBIGUOUS
-    assert calls["n"] == 0
-    print("PASS: acheck() validator never invoked on ambiguous attempt")
+    assert r.ok is False
+    assert calls["n"] == 1
 
 
 def test_check_and_acheck_agree_with_validator():

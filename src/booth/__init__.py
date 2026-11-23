@@ -20,9 +20,11 @@ from booth.core import (
     INVALID_SCORE,
     DEFAULT_THRESHOLD,
     DEFAULT_MAX_RETRIES,
+    DEFAULT_SUFFIX,
+    REASONING_SUFFIX,
 )
 
-__version__ = "0.5.9"
+__version__ = "0.6.0"
 
 __all__ = [
     "Attempt",
@@ -46,4 +48,6 @@ __all__ = [
     "INVALID_SCORE",
     "DEFAULT_THRESHOLD",
     "DEFAULT_MAX_RETRIES",
+    "DEFAULT_SUFFIX",
+    "REASONING_SUFFIX",
 ]

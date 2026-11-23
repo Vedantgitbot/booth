@@ -1,10 +1,9 @@
 [build-system]
 requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
-
 [project]
 name = "boothpy"
-version = "0.5.9"
+version = "0.6.0"
 description = "A lightweight, provider-agnostic checkpoint layer for trusting AI system outputs."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -27,27 +26,21 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = []
-
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]
 typecheck = ["mypy>=1.19,<2.0"]
-
 [project.urls]
 Homepage = "https://github.com/Vedantgitbot/booth"
 Repository = "https://github.com/Vedantgitbot/booth"
 Documentation = "https://github.com/Vedantgitbot/booth/blob/main/TUTORIAL.md"
 Changelog = "https://github.com/Vedantgitbot/booth/blob/main/CHANGELOG.md"
 Issues = "https://github.com/Vedantgitbot/booth/issues"
-
 [tool.setuptools.packages.find]
 where = ["src"]
-
 [tool.setuptools.package-data]
 booth = ["py.typed"]
-
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-
 [tool.mypy]
 # Run mypy on Python 3.12 in CI while checking compatibility with BOOTH's
 # minimum supported Python version.

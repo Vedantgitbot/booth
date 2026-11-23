@@ -23,7 +23,8 @@ INVALID_SCORE = "INVALID_SCORE"
 DEFAULT_THRESHOLD = 0.7
 DEFAULT_MAX_RETRIES = 1
 
-_CONFIDENCE_SUFFIX = """
+# The default output instructions. Byte-identical to the 0.5.x text.
+DEFAULT_SUFFIX = """
 
 After answering, output your response as a single JSON object on its \
 own line, with exactly these keys, IN THIS ORDER:
@@ -42,6 +43,33 @@ answer under your best-guess interpretation, and name it in \
 not pad the confidence toward 1.0 out of politeness — under-confidence \
 and over-confidence are both penalized. Output ONLY the JSON object, \
 nothing else."""
+
+# Same JSON schema and guidance as DEFAULT_SUFFIX, but the model may work
+# the question out first. The parser takes the last valid top-level object,
+# so the JSON object just has to come last.
+REASONING_SUFFIX = """
+
+If the question needs working out, think it through step by step first. \
+Then, as the very last thing in your reply, output your response as a \
+single JSON object on its own line, with exactly these keys, IN THIS ORDER:
+{"ambiguous": true/false, "interpretations": ["<reading 1>", "<reading 2>", ...], "chosen_interpretation": "<which reading you answered under, or null if not ambiguous>", "answer": "<your answer, concise>", "confidence": <float 0.0-1.0>}
+
+Set "ambiguous" to true if the question has more than one reasonable, \
+meaningfully different answer depending on interpretation (different \
+named entities sharing a name, different metrics like assets vs. \
+market cap, different time periods, etc.). List those readings in \
+"interpretations" (empty list if not ambiguous). If ambiguous, still \
+answer under your best-guess interpretation, and name it in \
+"chosen_interpretation".
+
+"confidence" is your own honest estimate of the probability that \
+"answer" is factually correct, given the interpretation you chose. Do \
+not pad the confidence toward 1.0 out of politeness — under-confidence \
+and over-confidence are both penalized. Put the JSON object last, \
+after any working, and write nothing after it."""
+
+# Old private name, kept so existing code and tests keep working.
+_CONFIDENCE_SUFFIX = DEFAULT_SUFFIX
 
 _MISSING = object()  # tells "key absent" apart from "key present but invalid"
 
@@ -83,6 +111,10 @@ class Attempt:
     # True when call_fn raised or returned a non-string, so there was no
     # response to parse.
     call_failed: bool = False
+    # Text before the JSON object the default parser selected, stripped of
+    # surrounding whitespace ("" if the object starts the reply). None when
+    # nothing was parsed, or when a custom parse_fn was used.
+    pre_json_text: Optional[str] = None
 
 
 class BoothRejected(Exception):
@@ -192,46 +224,73 @@ class BoothResult:
         }
 
 
-def _build_prompt(user_prompt: str) -> str:
-    return user_prompt.rstrip() + _CONFIDENCE_SUFFIX
+def _resolve_suffix(suffix: Optional[str]) -> str:
+    """None means the default. Anything else must be a real, non-blank string."""
+    if suffix is None:
+        return DEFAULT_SUFFIX
+    if not isinstance(suffix, str):
+        raise TypeError(f"suffix must be a str, got {type(suffix).__name__}")
+    if not suffix.strip():
+        raise ValueError("suffix must be a non-empty string")
+    return suffix
 
 
-def _build_retry_prompt(original_prompt: str, previous: Attempt) -> str:
+def _build_prompt(user_prompt: str, suffix: str = DEFAULT_SUFFIX) -> str:
+    return user_prompt.rstrip() + suffix
+
+
+def _build_retry_prompt(
+    original_prompt: str, previous: Attempt, suffix: str = DEFAULT_SUFFIX
+) -> str:
     return (
         f"{original_prompt.rstrip()}\n\n"
         f"On a previous attempt you answered: \"{previous.answer}\" "
         f"with confidence {previous.confidence}.\n"
         f"Reconsider carefully. If that answer is correct, restate it. "
         f"If it is wrong, give the corrected answer."
-        f"{_CONFIDENCE_SUFFIX}"
+        f"{suffix}"
     )
 
 
-def _build_parse_failure_prompt(original_prompt: str, previous: Attempt) -> str:
-    return (
-        f"{original_prompt.rstrip()}\n\n"
-        f"Your previous response could not be parsed: it did not "
-        f"contain a valid JSON object with the required keys. Output "
-        f"your response as a single JSON object with exactly the "
-        f"required keys, and nothing else — no markdown code fences, "
-        f"no commentary before or after it."
-        f"{_CONFIDENCE_SUFFIX}"
-    )
+def _build_parse_failure_prompt(
+    original_prompt: str, previous: Attempt, suffix: str = DEFAULT_SUFFIX
+) -> str:
+    if suffix == DEFAULT_SUFFIX:
+        # Exact 0.5.x wording. "Nothing else" is only right for the default
+        # suffix, which asks for the JSON object and nothing more.
+        instruction = (
+            f"Your previous response could not be parsed: it did not "
+            f"contain a valid JSON object with the required keys. Output "
+            f"your response as a single JSON object with exactly the "
+            f"required keys, and nothing else — no markdown code fences, "
+            f"no commentary before or after it."
+        )
+    else:
+        # A custom suffix may allow working before the JSON, so don't forbid it.
+        instruction = (
+            f"Your previous response could not be parsed: it did not "
+            f"contain a valid JSON object with the required keys. Follow "
+            f"the output format below exactly, and make sure your reply "
+            f"ends with the single JSON object."
+        )
+    return f"{original_prompt.rstrip()}\n\n{instruction}{suffix}"
 
 
-def _build_validation_failure_prompt(original_prompt: str, previous: Attempt) -> str:
+def _build_validation_failure_prompt(
+    original_prompt: str, previous: Attempt, suffix: str = DEFAULT_SUFFIX
+) -> str:
     return (
         f"{original_prompt.rstrip()}\n\n"
         f"Your previous answer was: \"{previous.answer}\"\n\n"
         f"That answer failed validation: {previous.validation_error}\n\n"
         f"Reconsider carefully and provide a corrected answer that "
         f"satisfies the validation requirement."
-        f"{_CONFIDENCE_SUFFIX}"
+        f"{suffix}"
     )
 
 
-def _iter_top_level_objects(text: str):
-    """Yield each top-level JSON object in the text, in order of appearance.
+def _iter_top_level_objects_with_pos(text: str):
+    """Yield (object, start_index) for each top-level JSON object, in order.
 
     Uses raw_decode at every '{' so braces inside string values are handled.
     Objects nested inside an object that decoded successfully are skipped, so a
@@ -246,8 +305,14 @@ def _iter_top_level_objects(text: str):
             idx = text.find("{", idx + 1)
             continue
         if isinstance(obj, dict):
-            yield obj
+            yield obj, idx
         idx = text.find("{", end)
+
+
+def _iter_top_level_objects(text: str):
+    """Yield each top-level JSON object in the text, in order of appearance."""
+    for obj, _start in _iter_top_level_objects_with_pos(text):
+        yield obj
 
 
 def _exceeds_json_nesting_limit(text: str, limit: int = 1024) -> bool:
@@ -364,9 +429,10 @@ def _parse_response(raw_text: str) -> Attempt:
     # candidates. If no object is valid, the error describes why the last one
     # (the one closest to the end of the reply) was rejected.
     last_reason: Optional[str] = None
-    for obj in reversed(list(_iter_top_level_objects(raw_text))):
+    for obj, start in reversed(list(_iter_top_level_objects_with_pos(raw_text))):
         attempt, error = _attempt_from_parsed(obj, raw_text)
         if attempt is not None:
+            attempt.pre_json_text = raw_text[:start].strip()
             return attempt
         if last_reason is None:
             last_reason = error
@@ -463,15 +529,17 @@ def _evaluate(
     return None
 
 
-def _next_prompt(original_prompt: str, attempt: Attempt) -> str:
+def _next_prompt(
+    original_prompt: str, attempt: Attempt, suffix: str = DEFAULT_SUFFIX
+) -> str:
     if attempt.call_failed:
         # Nothing came back to comment on, so just ask again.
-        return _build_prompt(original_prompt)
+        return _build_prompt(original_prompt, suffix)
     if not attempt.parse_ok:
-        return _build_parse_failure_prompt(original_prompt, attempt)
+        return _build_parse_failure_prompt(original_prompt, attempt, suffix)
     if not attempt.passed_validation:
-        return _build_validation_failure_prompt(original_prompt, attempt)
-    return _build_retry_prompt(original_prompt, attempt)
+        return _build_validation_failure_prompt(original_prompt, attempt, suffix)
+    return _build_retry_prompt(original_prompt, attempt, suffix)
 
 
 def _finalize_uncertain(attempts: List[Attempt]) -> BoothResult:
@@ -690,6 +758,7 @@ def check(
     *,
     validator: Optional[ValidatorFn] = None,
     parse_fn: Optional[ParseFn] = None,
+    suffix: Optional[str] = None,
 ) -> BoothResult:
     _validate_call_args(prompt, call_fn)
     _validate_args(threshold, max_retries)
@@ -702,6 +771,7 @@ def check(
     _validate_on_attempt_callable(on_attempt)
     _validate_validator_callable(validator)
     _validate_parse_fn_callable(parse_fn)
+    active_suffix = _resolve_suffix(suffix)
     if on_attempt is not None and _is_async_callable(on_attempt):
         raise TypeError(
             "check() cannot await an async on_attempt callback. "
@@ -710,7 +780,7 @@ def check(
         )
 
     attempts: List[Attempt] = []
-    current_prompt = _build_prompt(prompt)
+    current_prompt = _build_prompt(prompt, active_suffix)
 
     for i in range(max_retries + 1):
         try:
@@ -721,7 +791,7 @@ def check(
             bad_return = _call_fn_to_attempt(raw)
             attempt = bad_return if bad_return is not None else _parse_call_response(raw, parse_fn)
 
-        if attempt.parse_ok and not attempt.ambiguous:
+        if attempt.parse_ok:
             passed, err = _run_validator(validator, attempt.answer)
             attempt.passed_validation = passed
             attempt.validation_error = err
@@ -734,7 +804,7 @@ def check(
         if result is not None:
             return result
 
-        current_prompt = _next_prompt(prompt, attempt)
+        current_prompt = _next_prompt(prompt, attempt, active_suffix)
 
     return _finalize_uncertain(attempts)
 
@@ -750,6 +820,7 @@ async def acheck(
     *,
     validator: Optional[ValidatorFn] = None,
     parse_fn: Optional[ParseFn] = None,
+    suffix: Optional[str] = None,
 ) -> BoothResult:
     _validate_call_args(prompt, call_fn)
     if not _is_async_callable(call_fn):
@@ -762,9 +833,10 @@ async def acheck(
     _validate_on_attempt_callable(on_attempt)  # sync or async is decided per call below
     _validate_validator_callable(validator)
     _validate_parse_fn_callable(parse_fn)
+    active_suffix = _resolve_suffix(suffix)
 
     attempts: List[Attempt] = []
-    current_prompt = _build_prompt(prompt)
+    current_prompt = _build_prompt(prompt, active_suffix)
 
     for i in range(max_retries + 1):
         try:
@@ -775,7 +847,7 @@ async def acheck(
             bad_return = _call_fn_to_attempt(raw)
             attempt = bad_return if bad_return is not None else _parse_call_response(raw, parse_fn)
 
-        if attempt.parse_ok and not attempt.ambiguous:
+        if attempt.parse_ok:
             passed, err = _run_validator(validator, attempt.answer)
             attempt.passed_validation = passed
             attempt.validation_error = err
@@ -791,6 +863,6 @@ async def acheck(
         if result is not None:
             return result
 
-        current_prompt = _next_prompt(prompt, attempt)
+        current_prompt = _next_prompt(prompt, attempt, active_suffix)
 
     return _finalize_uncertain(attempts)
