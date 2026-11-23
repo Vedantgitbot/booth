@@ -1,6 +1,6 @@
 # BOOTH Tutorial
 
-A practical guide to BOOTH's public API and how each function, type, property, and method works. This version documents `v0.5.9`.
+A practical guide to BOOTH's public API and how each function, type, property, and method works. This version documents `v0.6.0`.
 
 BOOTH is a lightweight checkpoint layer for LLM outputs. It takes an LLM call, evaluates the returned response for parsing, ambiguity, confidence, and optional application-specific validation, and gives your application a structured `BoothResult`.
 
@@ -51,8 +51,8 @@ Your application
  parse_fn (optional) or BOOTH's default JSON extraction
       │
       ├── valid format?
-      ├── ambiguous?
       ├── custom validator?
+      ├── ambiguous?
       └── confidence >= threshold?
       │
       ▼
@@ -84,6 +84,7 @@ booth.check(
     *,
     validator=None,
     parse_fn=None,
+    suffix=None,
 )
 ```
 
@@ -152,7 +153,11 @@ If `call_fn` returns something that is not a string (`None`, a dictionary, a lis
 result = booth.check(call_llm, "Explain how TCP works.")
 ```
 
-The prompt can be any application-specific LLM instruction. BOOTH appends its own instructions asking the model for a JSON object with `ambiguous`, `interpretations`, `chosen_interpretation`, `answer`, and `confidence`. How BOOTH finds that object in the reply is described in §3.8. On reasoning-heavy tasks the JSON-only instruction can cost accuracy with small models; see TROUBLESHOOTING entry 10.
+The prompt can be any application-specific LLM instruction. BOOTH appends its own output instructions to it, asking the model for a JSON object with `ambiguous`, `interpretations`, `chosen_interpretation`, `answer`, and `confidence`. Those instructions are the **suffix** (§3.9): the default one unless you pass `suffix=`. How BOOTH finds the JSON object in the reply is described in §3.8.
+
+Trailing whitespace in your prompt is trimmed before the suffix is added, so `"What is 2+2?"` and `"What is 2+2?\n\n"` send the model exactly the same text. Leading whitespace is kept. The retry prompts trim the same way.
+
+On reasoning-heavy tasks the default "JSON only" instruction can cost accuracy with small models. Reasoning mode (§3.9) and TROUBLESHOOTING entry 10 cover that.
 
 As of `v0.5.2`, a non-`str` `prompt` raises `TypeError` immediately:
 
@@ -212,6 +217,8 @@ Call failure (call_fn raised or returned a non-string)
 ```
 
 As of `v0.5.4`, a failed call is retried with the original prompt, exactly as in the first attempt.
+
+Every retry prompt ends with the same suffix as the first call (§3.9). Since `v0.6.0` that includes a suffix you supplied yourself.
 
 Ambiguity is different: an ambiguous attempt is returned immediately rather than retried.
 
@@ -303,16 +310,23 @@ The supported return forms are `True`, `False`, `(True, "reason")`, `(False, "re
 
 ### Evaluation order
 
-For every attempt, BOOTH evaluates the response in this order:
+For every attempt, BOOTH works in this order:
 
 ```text
-1. Parsing        (default extraction, or parse_fn)
-2. Ambiguity      (an ambiguous attempt is returned immediately)
-3. Validator
-4. Confidence
+1. Parsing      (default extraction, or parse_fn)
+2. Validator    (runs on every attempt that parsed, ambiguous or not;
+                 the outcome is recorded on the attempt)
+3. Ambiguity    (an ambiguous attempt is returned immediately as AMBIGUOUS,
+                 whatever validation said)
+4. Validation   (a failed validation means retry, not accept)
+5. Confidence
 ```
 
-Validation therefore occurs **before confidence**. A highly confident answer can still fail the validator and be retried. The validator never runs on an attempt that failed to parse or was flagged ambiguous.
+Validation therefore occurs **before confidence**. A highly confident answer can still fail the validator and be retried. The validator does not run on an attempt that failed to parse.
+
+> **Changed in `v0.6.0`:** the validator now also runs on ambiguous attempts. Before, an ambiguous attempt skipped it and `passed_validation` stayed `True`, so an unvalidated answer looked validated. Now `attempt.passed_validation` and `attempt.validation_error` describe the ambiguous answer truthfully. The status is still `AMBIGUOUS` and `ok` is still `False`, a failed validation on an ambiguous attempt does not trigger a retry, and `result.method` stays `"ambiguity"`.
+>
+> Two consequences: a validator you wrote for `0.5.x` may now be called with an ambiguous attempt's answer, and that answer can be an empty string, because a blank `answer` is allowed when the model marks the question ambiguous.
 
 ### Validator exceptions
 
@@ -365,10 +379,11 @@ result = booth.check(
 - **Replaces extraction.** When `parse_fn` is supplied it fully replaces BOOTH's default JSON extraction (§3.8). It is not layered on top of it.
 - **Same validation.** The returned dictionary follows the rules of a normally parsed response. `answer` and `confidence` are required, `confidence` must be a number in `[0.0, 1.0]` (a boolean is rejected), a `dict` or `list` `answer` is rejected, an empty `answer` is rejected unless the attempt is ambiguous, and `ambiguous` is coerced from a boolean or `"true"`/`"false"`. Extra fields stay available in `result.parsed`.
 - **Same pipeline.** The result feeds the existing validator, retry, confidence, ambiguity, and `BoothResult` handling.
-- **The prompt is unchanged.** BOOTH still appends its JSON instructions to your prompt. `parse_fn` changes parsing only.
+- **The prompt is unchanged.** BOOTH still appends its output instructions to your prompt (the default JSON ones, unless you pass `suffix=`, §3.9). `parse_fn` changes parsing only.
 - **Parse failures, not call failures.** A parser exception, a `None` result, a non-dict result, or a dictionary that fails validation is reported as a parse failure, and `call_failed` stays `False`.
 - **Error messages.** The attempt's `error` reads `parse_fn raised <ExceptionType>: <message>` for an exception, or `parsed response was <type>, expected dict` for a non-dict result.
-- **Retry prompts are unchanged.** A failed `parse_fn` result gets the existing JSON-style parse-failure retry prompt. If that does not suit your provider-native format, use `max_retries=0` and retry in your own code.
+- **Retry prompts still talk about JSON.** A failed `parse_fn` result gets the parse-failure retry prompt, whose first sentence refers to "a valid JSON object with the required keys". If that does not suit your provider-native format, use `max_retries=0` and retry in your own code.
+- **No `pre_json_text`.** `attempt.pre_json_text` (§13) is `None` when `parse_fn` is used, because BOOTH did not choose a JSON object.
 - **`call_fn` still returns a string.** A non-`str` return is a call failure and never reaches `parse_fn`.
 
 ### Validation
@@ -397,6 +412,7 @@ When no `parse_fn` is given, BOOTH looks for the JSON object in the model's repl
 - **Braces in text are harmless.** Text such as `\frac{1}{2}` or `{x}` is not a JSON object and is skipped, and braces inside a JSON string value are ordinary content.
 - **Failures name the last object.** When several objects are invalid, `attempt.error` describes the last one in the reply.
 - **Very deep nesting is a parse failure.** JSON nested deeper than 1024 levels is rejected (since `v0.5.8`).
+- **The text before the chosen object is kept.** Since `v0.6.0` it is available as `attempt.pre_json_text` (§13).
 
 Before `v0.5.9` the first valid object was used, and a nested object could be picked instead of its invalid parent.
 
@@ -406,7 +422,84 @@ Let me work it out: 12 * 4 = 48, half is 24.
  "answer": "24", "confidence": 0.95}
 ```
 
-BOOTH uses the object on the last two lines and ignores the working above it.
+BOOTH uses the object on the last two lines and ignores the working above it. With this reply, `attempt.pre_json_text` is `"Let me work it out: 12 * 4 = 48, half is 24."`.
+
+---
+
+## 3.9 `suffix=` and the prompt templates
+
+*Added in `v0.6.0`.*
+
+BOOTH adds output instructions to the end of your prompt: the JSON schema, what `ambiguous` and `confidence` mean, and a line telling the model what to output. That text is the **suffix**. By default it is `booth.DEFAULT_SUFFIX`, exactly the wording BOOTH has always used.
+
+`suffix=` replaces it. It is keyword-only and optional, and it is available on both `check()` and `acheck()`:
+
+```python
+result = booth.check(call_llm, prompt, suffix=booth.REASONING_SUFFIX)
+```
+
+Leaving it out, or passing `None`, keeps the default. Nothing about the default prompt changed in `v0.6.0`.
+
+### The two templates
+
+| Template | What it asks the model to do |
+| --- | --- |
+| `booth.DEFAULT_SUFFIX` | Output the JSON object and nothing else. Byte-identical to the text used since `v0.1`. |
+| `booth.REASONING_SUFFIX` | Work the question out first if it needs it, then end the reply with the same JSON object. Same schema and same guidance as the default. |
+
+Both are plain strings you can read, print, and build on.
+
+### Reasoning mode
+
+The default suffix says "Output ONLY the JSON object, nothing else". That leaves a small model no room to think, and on reasoning-heavy questions it can cost accuracy. `REASONING_SUFFIX` lets the model reason first. The default parser (§3.8) uses the last valid top-level object, so the working text before the JSON is ignored for the answer and kept in `attempt.pre_json_text`:
+
+```python
+result = booth.check(call_llm, "A train leaves at 3:40 and the trip takes 95 minutes. When does it arrive?",
+                     suffix=booth.REASONING_SUFFIX)
+
+attempt = result.attempts[-1]
+print(result.answer)             # "5:15"
+print(attempt.pre_json_text)     # the model's working, for logs and debugging
+```
+
+Things to know before using it:
+
+- **Replies get longer.** Set a generous output-token limit in your own `call_fn`. If the limit cuts the reply off before the JSON object, the attempt is a parse failure.
+- **It is slower.** In the benchmark example, the reasoning arm took about 1.8 times as long as the default prompt on one model.
+- **It helps only some tasks.** On a 7B model, GSM8K accuracy was 97.5% with a plain call, 35.0% with the default prompt, and 92.5% with room to reason. It did not help trivia or TruthfulQA-style questions, and on a second model the default prompt did not show the same drop. It is an option to try on reasoning-heavy tasks, not a general upgrade. See TROUBLESHOOTING entry 10.
+
+### Adding a format line to the default
+
+Extend the default instead of replacing it when you only need to say more about the answer. The schema stays intact and the extra line reaches every attempt and every retry:
+
+```python
+FORMAT_LINE = (
+    '\n\nPut the answer in the "answer" field as one quantity with its unit, '
+    "for example 12.34 USD, rounded the way the question says."
+)
+
+result = booth.check(
+    call_llm,
+    prompt,
+    suffix=booth.DEFAULT_SUFFIX + FORMAT_LINE,
+    validator=is_valid_amount,
+)
+```
+
+This pairs well with a validator. A validator can only check what the model was told to produce, so telling it the format in the suffix, on every attempt, is what lets the validator reject a bad answer and have the retry fix it.
+
+### Rules
+
+- **Type and content.** `suffix` must be a `str` that is not empty or whitespace-only. A non-`str` raises `TypeError` and a blank one raises `ValueError`, both before any LLM call.
+- **Appended as written.** BOOTH trims trailing whitespace from your prompt and appends the suffix exactly as given. BOOTH does not add a separator, so start your suffix with a blank line (`"\n\n"`), as the two templates do. Otherwise it runs straight into the prompt.
+- **Keep the schema.** The default parser looks for a JSON object with `answer` and `confidence`. A suffix that does not ask for one makes every attempt a parse failure. The easiest way to stay safe is to start from `DEFAULT_SUFFIX` or `REASONING_SUFFIX`. If you replace the instructions with your own format and a matching `parse_fn` (§3.7), set `max_retries=0` or retry in your own code, because the parse-failure retry still refers to a JSON object.
+- **The same suffix on every attempt.** The first call, the low-confidence retry, the validation-failure retry, the parse-failure retry, and the re-ask after a failed call all end with your suffix.
+- **The parse-failure retry follows the suffix.** With the default suffix, that retry keeps its usual wording ("…and nothing else, no markdown code fences, no commentary before or after it"). With any other suffix, that line is replaced by "Follow the output format below exactly, and make sure your reply ends with the single JSON object", because a custom suffix may allow working before the JSON.
+- **`check()` and `acheck()` behave identically.**
+
+### Not changed by `suffix=`
+
+`suffix=` changes what BOOTH asks for. It does not change how replies are judged: parsing (§3.8), the validator (§3.6), ambiguity (§4), and the confidence threshold work the same way. `check_with_evidence()` makes no LLM call and has no suffix.
 
 ---
 
@@ -431,9 +524,42 @@ if result.status == booth.AMBIGUOUS:
     print(result.interpretations)
 ```
 
-Ambiguous attempts are not automatically retried, because reconsidering the same question does not necessarily resolve the ambiguity in the question itself. A validator is not invoked on an ambiguous attempt.
+Ambiguous attempts are not automatically retried, because reconsidering the same question does not necessarily resolve the ambiguity in the question itself. Since `v0.6.0`, a validator you supplied does run on an ambiguous attempt's answer (§3.6), so the attempt records whether it passed. A failed validation does not cause a retry and does not change the status.
 
 Ambiguity detection depends on the model noticing the ambiguity. Some models pick one interpretation without flagging it.
+
+## 4.1 Using an ambiguous result
+
+An `AMBIGUOUS` result is rejected (`ok` is `False`), but it carries more than a status. The model still answered under its best-guess reading, and BOOTH keeps all of it:
+
+| Where | What it holds |
+| --- | --- |
+| `result.answer` | The answer under the interpretation the model chose |
+| `result.interpretations` | The readings the model listed |
+| `result.attempts[-1].chosen_interpretation` | Which reading it answered under |
+| `result.confidence` | The model's own confidence in that answer |
+| `result.attempts[-1].passed_validation` | Whether your validator accepted the answer (§3.6) |
+
+A common use is to show the user the readings and the answer you would give, and let them choose:
+
+```python
+result = booth.check(call_llm, "What is the capital of Georgia?", validator=my_validator)
+
+if result.status == booth.AMBIGUOUS:
+    attempt = result.attempts[-1]
+    message = (
+        f"This question has more than one reading: {result.interpretations}. "
+        f"Answering as '{attempt.chosen_interpretation}': {result.answer}"
+    )
+    if not attempt.passed_validation:
+        message += " (this answer failed validation)"
+    show_to_user(message)
+```
+
+Two cautions:
+
+- **Confidence is the model's own estimate.** It does not make an ambiguous answer safe or correct, and in several experiments it did not separate right answers from wrong ones. Treat it as information to show or log, not as a reason to trust the answer.
+- **`ok` stays `False`.** Code that checks `result.ok`, or calls `unwrap()`, will not accept an ambiguous answer by accident. If you decide to use `result.answer` anyway, that decision belongs in your application.
 
 ---
 
@@ -464,7 +590,7 @@ REPAIRED
 
 # 6. `acheck()`
 
-`acheck()` is the asynchronous equivalent of `check()`. It accepts the same arguments, including `parse_fn` (§3.7); its async `call_fn` must still return a string.
+`acheck()` is the asynchronous equivalent of `check()`. It accepts the same arguments, including `parse_fn` (§3.7) and `suffix` (§3.9); its async `call_fn` must still return a string.
 
 ```python
 result = await booth.acheck(call_fn, prompt)
@@ -483,7 +609,7 @@ async def ask(prompt: str):
     return "Unable to provide an acceptable answer."
 ```
 
-The behavior is otherwise the same as `check()`, including the argument validation described in §3. A non-`str` `prompt`, a non-callable `call_fn`, a non-callable `on_attempt`, a non-callable `validator`, and a non-callable or `async def` `parse_fn` all raise `TypeError` immediately.
+The behavior is otherwise the same as `check()`, including the argument validation described in §3. A non-`str` `prompt`, a non-callable `call_fn`, a non-callable `on_attempt`, a non-callable `validator`, a non-callable or `async def` `parse_fn`, and a non-`str` or blank `suffix` all raise immediately, before any LLM call.
 
 ---
 
@@ -708,6 +834,7 @@ does not retrieve evidence
 does not retry
 does not use a validator
 does not use parse_fn
+does not use suffix
 does not produce parsed LLM JSON
 ```
 
@@ -924,6 +1051,7 @@ attempt.passed_validation
 attempt.validation_error
 attempt.parsed
 attempt.call_failed
+attempt.pre_json_text
 ```
 
 `check_with_evidence()` results always have `attempts == []`. That is why `result.reason` and `result.detail` (§7.8) exist: they are the diagnostic surface for a path with no attempt history.
@@ -996,7 +1124,7 @@ The interpretation selected by the model when applicable. Falsy-but-present valu
 
 ## `Attempt.passed_validation`
 
-Whether the custom validator passed. When no validator was supplied, this is always `True`.
+Whether the custom validator passed. When no validator was supplied, this is always `True`. Since `v0.6.0` it is also set truthfully for an ambiguous attempt (§3.6).
 
 ## `Attempt.validation_error`
 
@@ -1005,6 +1133,27 @@ The validation failure information when validation fails; `None` when no validat
 ## `Attempt.parsed`
 
 The raw parsed object for that attempt, before BOOTH's own coercion. When `parse_fn` is used, this is the dictionary your parser returned. If parsing failed, `attempt.parsed` is `None`.
+
+## `Attempt.pre_json_text`
+
+Added in `v0.6.0`. The text that came before the JSON object the default parser selected (§3.8), with surrounding whitespace removed.
+
+```python
+attempt = result.attempts[-1]
+print(attempt.pre_json_text)   # e.g. "12 * 4 = 48, half is 24."
+```
+
+It is the natural place to find the model's working when you use `REASONING_SUFFIX` (§3.9). If the reply holds several JSON objects, it is the text before the object BOOTH actually chose (the last valid one), so an earlier draft object appears inside it.
+
+| Case | Value |
+| --- | --- |
+| The object starts the reply | `""` (an empty string) |
+| Text came before the object | that text, stripped |
+| The attempt failed to parse | `None` |
+| `call_fn` failed | `None` |
+| A custom `parse_fn` was used | `None` |
+
+It is a diagnostic field. It does not affect status, confidence, or retries.
 
 ---
 
@@ -1153,7 +1302,7 @@ print(payload["method"])
 json.dumps(payload)
 ```
 
-`payload` always contains `"reason"` and `"detail"` (as of `v0.5.1`) and `"call_failed"` (as of `v0.5.4`), and each entry in `payload["attempts"]` is a plain dictionary that includes `call_failed`.
+`payload` always contains `"reason"` and `"detail"` (as of `v0.5.1`) and `"call_failed"` (as of `v0.5.4`), and each entry in `payload["attempts"]` is a plain dictionary that includes `call_failed` and, as of `v0.6.0`, `pre_json_text`.
 
 `to_dict()` is useful for logging, queues, monitoring, evaluation pipelines, and JSON serialization.
 
@@ -1188,6 +1337,22 @@ booth.DEFAULT_MAX_RETRIES   # 1
 ```
 
 Useful when building application configuration around BOOTH.
+
+## 22.1 Prompt templates
+
+*Added in `v0.6.0`.*
+
+```python
+booth.DEFAULT_SUFFIX      # the default output instructions (unchanged since v0.1)
+booth.REASONING_SUFFIX    # lets the model reason first, then end with the JSON object
+```
+
+Both are plain strings, meant to be passed to `suffix=` (§3.9) or extended:
+
+```python
+booth.check(call_llm, prompt, suffix=booth.REASONING_SUFFIX)
+booth.check(call_llm, prompt, suffix=booth.DEFAULT_SUFFIX + "\n\nAnswer in one short sentence.")
+```
 
 ---
 
@@ -1281,6 +1446,16 @@ result = booth.check(
 )
 ```
 
+With reasoning mode, keeping the model's working for your logs:
+
+```python
+result = booth.check(call_llm, prompt, suffix=booth.REASONING_SUFFIX)
+
+if result.ok:
+    log.debug("working: %s", result.attempts[-1].pre_json_text)
+    return result.answer
+```
+
 ---
 
 # 26. Complete Async Example
@@ -1345,6 +1520,7 @@ result = booth.check(call_llm, prompt, max_retries=2)
 for index, attempt in enumerate(result.attempts):
     print("Attempt:", index)
     print("Raw:", attempt.raw_text)
+    print("Working:", attempt.pre_json_text)
     print("Answer:", attempt.answer)
     print("Confidence:", attempt.confidence)
     print("Parsed:", attempt.parse_ok)
@@ -1386,6 +1562,8 @@ from booth import (
     INVALID_SCORE,
     DEFAULT_THRESHOLD,
     DEFAULT_MAX_RETRIES,
+    DEFAULT_SUFFIX,
+    REASONING_SUFFIX,
 )
 ```
 
@@ -1393,11 +1571,11 @@ The three primary functions are `booth.check()`, `booth.acheck()`, and `booth.ch
 
 The primary result and type objects are `booth.Attempt`, `booth.BoothResult`, `booth.BoothRejected`, `booth.CompareFn`, `booth.ValidatorFn`, and `booth.ParseFn`.
 
-The status constants are `ACCEPTED`, `REPAIRED`, `AMBIGUOUS`, `UNCERTAIN`, and `BLOCKED`. The reason codes (`check_with_evidence()` results only) are `EMPTY_ANSWER`, `NO_EVIDENCE`, `EVIDENCE_DISAGREES`, `COMPARE_FAILED`, and `INVALID_SCORE`. The default configuration constants are `DEFAULT_THRESHOLD` and `DEFAULT_MAX_RETRIES`.
+The status constants are `ACCEPTED`, `REPAIRED`, `AMBIGUOUS`, `UNCERTAIN`, and `BLOCKED`. The reason codes (`check_with_evidence()` results only) are `EMPTY_ANSWER`, `NO_EVIDENCE`, `EVIDENCE_DISAGREES`, `COMPARE_FAILED`, and `INVALID_SCORE`. The default configuration constants are `DEFAULT_THRESHOLD` and `DEFAULT_MAX_RETRIES`. The prompt templates are `DEFAULT_SUFFIX` and `REASONING_SUFFIX` (§22.1).
 
 ---
 
-# 30. Quick Reference (v0.5.2 to v0.5.9)
+# 30. Quick Reference (v0.5.2 to v0.6.0)
 
 ## Functions
 
@@ -1453,8 +1631,21 @@ These arguments raise a clear, specific error at the call site, before any LLM c
 | `on_attempt` | `check()`, `acheck()` | `TypeError` if not callable (v0.5.3); `check()` also rejects an async one |
 | `validator` | `check()`, `acheck()` | `TypeError` if not callable (v0.5.5) |
 | `parse_fn` | `check()`, `acheck()` | `TypeError` if not callable or if `async def` (v0.5.7) |
+| `suffix` | `check()`, `acheck()` | `TypeError` if not `str`; `ValueError` if empty or whitespace-only (v0.6.0) |
 | `answer` | `check_with_evidence()` | `TypeError` if not `str`/`None` (v0.4.9) |
 | `evidence_threshold` | `check_with_evidence()` | `TypeError` if not a real number; `ValueError` if outside `[0.0, 1.0]` |
+
+## New in v0.6.0
+
+| Change | Kind | Details |
+| --- | --- | --- |
+| `suffix=` on `check()` / `acheck()` | Added | §3.9 |
+| `DEFAULT_SUFFIX`, `REASONING_SUFFIX` | Added | §3.9, §22.1 |
+| The same suffix on every attempt and retry | Added | §3.4, §3.9 |
+| `Attempt.pre_json_text` | Added | §3.8, §13 |
+| The validator runs on ambiguous attempts | Changed | §3.6, §4 |
+
+The default prompt, the default retry wording, and the status BOOTH returns for an existing call are unchanged.
 
 ## Important result properties
 
@@ -1499,17 +1690,19 @@ result.to_dict()
 ```text
 check()
   │
-  ├── call the LLM (call_fn returns a string)
+  ├── build the prompt   (your prompt + the suffix)
+  │
+  ├── call the LLM       (call_fn returns a string)
   │
   ├── parse the response (default extraction, or parse_fn)
   │
-  ├── detect ambiguity
+  ├── run validator      (if supplied, on every attempt that parsed)
   │
-  ├── run validator (if supplied)
+  ├── detect ambiguity   (returns AMBIGUOUS immediately)
   │
   ├── check confidence
   │
-  ├── retry when appropriate
+  ├── retry when appropriate (same suffix on every retry)
   │
   └── return BoothResult
 ```

@@ -13,7 +13,7 @@ BOOTH can check whether a response:
 
 BOOTH does **not** independently establish that an answer is true. That distinction is important.
 
-This document covers when BOOTH fits and when it does not. For how each function, type, and property works, see the [Tutorial](TUTORIAL.md). This version describes `v0.5.8`.
+This document covers when BOOTH fits and when it does not. For how each function, type, and property works, see the [Tutorial](TUTORIAL.md). This version describes `v0.6.0`.
 
 ---
 
@@ -38,8 +38,8 @@ response
   ↓
 BOOTH checkpoint
   ├── parse?
-  ├── ambiguous?
   ├── application validation?
+  ├── ambiguous?
   ├── confidence threshold?
   └── retry if appropriate
   ↓
@@ -47,6 +47,12 @@ BoothResult
 ```
 
 This makes BOOTH useful when your application needs a structured decision about whether an LLM response should be accepted, retried, or rejected.
+
+## 1.1 What has worked best so far
+
+In the examples in this repository, the checks that caught wrong answers were the ones that do **not** depend on the model's own confidence: an application validator, or an evidence comparison with a comparator suited to the data. The model's self-reported confidence, on its own, caught almost nothing, because wrong answers often arrived at confidence 1.0.
+
+That points to the most reliable way to use BOOTH: give it a concrete rule or a source to check against (sections 4, 6, and 14.1), and treat confidence and ambiguity as additional signals around that check, not as the check itself.
 
 ---
 
@@ -74,7 +80,9 @@ BOOTH expects the model to return a JSON object such as:
 
 BOOTH checks whether the response can be parsed and whether the required values are usable. This lets your application distinguish a valid response from a malformed one, rather than passing raw model text downstream.
 
-If your provider has its own response format (JSON mode, tool calling, or a custom string encoding), pass a synchronous `parse_fn` to `check()` or `acheck()` to turn the returned string into the `answer` and `confidence` dictionary BOOTH expects. The result still goes through the same validation, retry, confidence, and ambiguity checks. Two limits to keep in mind: `call_fn` must still return a string, and BOOTH still sends its own JSON instructions in the prompt, so `parse_fn` changes parsing, not what the model is asked.
+The model does not have to answer with the JSON alone. BOOTH finds the JSON object anywhere in the reply and uses the last valid top-level one, so prose or reasoning before it is fine (see the [Tutorial](TUTORIAL.md) §3.8).
+
+If your provider has its own response format (JSON mode, tool calling, or a custom string encoding), pass a synchronous `parse_fn` to `check()` or `acheck()` to turn the returned string into the `answer` and `confidence` dictionary BOOTH expects. The result still goes through the same validation, retry, confidence, and ambiguity checks. Two limits to keep in mind: `call_fn` must still return a string, and BOOTH still sends its own output instructions in the prompt (the default JSON ones unless you pass `suffix=`, see section 4.1), so `parse_fn` changes parsing, not by itself what the model is asked.
 
 ### Good fit
 
@@ -119,6 +127,12 @@ if result.status == booth.AMBIGUOUS:
 
 This is a good use of BOOTH because ambiguity is something an ordinary LLM call may hide behind a confident-looking answer. See section 26 for its limits.
 
+## 3.1 An ambiguous result is not a dead end
+
+An `AMBIGUOUS` result is rejected (`ok` is `False`), but it keeps what you need to ask a good follow-up: the readings (`result.interpretations`), the reading the model answered under (`result.attempts[-1].chosen_interpretation`), and the answer under that reading (`result.answer`).
+
+A common pattern is to show the user those readings and the answer you would give, then let them choose. If you pass a `validator`, it also runs on the ambiguous answer (since `v0.6.0`), so `result.attempts[-1].passed_validation` tells you whether that answer passed your rule. The model's confidence is its own estimate and does not make an ambiguous answer safe. See the [Tutorial](TUTORIAL.md) §4.1.
+
 ---
 
 # 4. Good Use Case: Application-Specific Validation
@@ -155,6 +169,28 @@ def validate_number(answer):
 
 This is one of BOOTH's strongest use cases because the application, rather than the model, defines what constitutes an acceptable output.
 
+## 4.1 Tell the model the format (`suffix=`)
+
+A validator can only check what the model was asked to produce. A strict validator that expects `12.34 USD` will reject `"twelve dollars thirty-four"` every time unless the prompt says what format to use. A follow-up in [`examples/camerontjs-dot_numeric_format_limits/`](examples/camerontjs-dot_numeric_format_limits/RESULTS.md) found this in practice: for most of the replies it examined, the numeric checks stopped before comparing values, because of missing units or quantities the checker could not read, and the case's answer-format instruction had never been sent to the model.
+
+Since `v0.6.0`, `suffix=` is the place for that instruction. Extend the default instead of replacing it, so the JSON schema stays intact and the format line reaches every attempt and every retry:
+
+```python
+FORMAT_LINE = (
+    '\n\nPut the answer in the "answer" field as one amount with its currency, '
+    "for example 12.34 USD, rounded the way the question says."
+)
+
+result = booth.check(
+    call_llm,
+    prompt,
+    suffix=booth.DEFAULT_SUFFIX + FORMAT_LINE,
+    validator=validate_amount,
+)
+```
+
+If the validator rejects an answer, the retry shows the model the failure reason and repeats the same format line. See the [Tutorial](TUTORIAL.md) §3.9.
+
 ---
 
 # 5. Good Use Case: Repairing Bad LLM Outputs
@@ -173,6 +209,8 @@ result = booth.check(call_llm, prompt, max_retries=1)
 ```text
 LLM attempt → failed checkpoint → repair prompt → LLM retry → checkpoint again
 ```
+
+Every retry prompt ends with the same suffix as the first call, so an answer-format instruction added with `suffix=` reaches the retry too.
 
 If the retry succeeds, BOOTH returns `REPAIRED`. This is useful when a small number of additional model calls can improve the reliability of a workflow.
 
@@ -273,6 +311,7 @@ attempt.passed_validation
 attempt.validation_error
 attempt.call_failed
 attempt.parsed
+attempt.pre_json_text
 ```
 
 This can be useful for debugging prompts, measuring retry rates, evaluating model behavior, investigating validation failures, monitoring malformed outputs, comparing models, and building internal evaluation datasets.
@@ -287,6 +326,8 @@ for attempt in result.attempts:
         "error": attempt.error,
     })
 ```
+
+`attempt.pre_json_text` (since `v0.6.0`) holds the text the model wrote before the JSON object BOOTH used. With reasoning mode (`suffix=booth.REASONING_SUFFIX`) that is the model's working, which is worth logging when you need to see how an answer was reached.
 
 `result.to_dict()` gives the whole result, including attempts, as a JSON-serializable dictionary.
 
@@ -370,6 +411,21 @@ The confidence value comes from the model. BOOTH asks the model to estimate "Wha
 A model can be confidently wrong, and BOOTH cannot eliminate that problem.
 
 A small local-model run shows this: [`examples/rk042_ollama_qwen-3b/`](examples/rk042_ollama_qwen-3b/RESULTS.md) had a 3B model (`qwen2.5-coder:3b`) accept `"object"` as the name of an unknown next-door neighbor at confidence 1.0, even with schema-constrained output. It is a four-question run on one model, not a benchmark, and it records a different arithmetic result in an earlier exploratory run, so it illustrates a failure mode rather than measuring how often it occurs.
+
+## 14.1 A real example: a confident wrong number, caught by a rule
+
+[`examples/camerontjs-dot_numeric_comparison/`](examples/camerontjs-dot_numeric_comparison/RESULTS.md) ran 20 finance-style questions through a local `gemma3:12b` and compared four checkpoints on the same replies. Nineteen answers were correct. One was not: the model answered `2.225 USD` at confidence `1.0` when the question's rounding rule required `2.23 USD`.
+
+| Checkpoint | The wrong answer |
+| --- | --- |
+| `check()` (confidence only) | Accepted |
+| `check()` with a numeric `validator` | Withheld (`UNCERTAIN`) |
+| `check_with_evidence()` with a keyword matcher | Accepted |
+| `check_with_evidence()` with a numeric comparator | `BLOCKED` |
+
+Neither numeric setup withheld a correct live answer. This is the pattern in section 1.1: the model's confidence did not help, and a rule the application could state precisely did.
+
+Read it for what it is. There is **one** wrong live answer out of 20, so it shows a case, not a catch rate. The numeric rule was given the field label and rounding rule as case metadata, and it supports a bounded set of formats, not general financial language. The example also includes 40 authored right-and-wrong candidates, but those were written together with the rule, so their 20-of-20 result is a development check, not an accuracy estimate.
 
 ---
 
@@ -519,6 +575,8 @@ BOOTH's ambiguity mechanism depends on the LLM correctly identifying multiple re
 
 In the Ollama examples, a local model answered the Georgia question without flagging the ambiguity (see [TROUBLESHOOTING](TROUBLESHOOTING.md) entry 5). For particularly important inputs, deterministic disambiguation rules or explicit user clarification may be better.
 
+The opposite also happens. In the latency and accuracy benchmark ([`examples/Vedantgitbot_latency_accuracy/`](examples/Vedantgitbot_latency_accuracy/RESULTS.md)), the default ambiguity gate rejected 15 of 100 questions on `qwen2.5:7b`, mostly TruthfulQA-style ones, and a plain call had answered 13 of those correctly. On `gemma3:12b` over 50 questions ([`RESULTS_gemma3-12b.md`](examples/Vedantgitbot_latency_accuracy/RESULTS_gemma3-12b.md)), eight of the eleven ambiguity rejections were reference-correct. These are small runs on two models, but they say the same thing: an `AMBIGUOUS` result is a prompt to look, not proof that the question is unanswerable. Since the answer and the model's readings are kept on the result (section 3.1), you can use them instead of discarding the response.
+
 ---
 
 # 27. Evidence Agreement Is Only as Good as `compare_fn`
@@ -534,12 +592,13 @@ produces a high score regardless of the relationship between answer and evidence
 
 Note the distinction from `result.checker_failed`: that property is `True` when `compare_fn` *crashes* or returns something unusable as a score, a broken comparator BOOTH can detect. A comparator that runs without error but is badly designed, like the `return 0.9` example, produces a normal-looking `ACCEPTED` or `BLOCKED` result with `checker_failed=False`.
 
-Two real runs in `examples/` show what a better comparator buys you, and where it still falls short:
+Real runs in `examples/` show what a better comparator buys you, and where it still falls short:
 
 - [`examples/camerontjs-dot_compare_fn/`](examples/camerontjs-dot_compare_fn/RESULTS.md) runs a keyword matcher and an NLI model on the same 10 hand-written cases. The keyword matcher accepted "90 days" against a 30-day policy; the NLI model blocked it. It also shows a limit: when one passage supported the claim and another contradicted it, a comparator that returns only the best entailment score hid the contradiction and BOOTH returned `ACCEPTED`. That is a property of the comparator, not of BOOTH, but a single returned number makes it easy to do. Decide how your comparator treats conflicting passages.
 - [`examples/Harithalakshmikt_langchain_flan/`](examples/Harithalakshmikt_langchain_flan/RESULTS.md) shows the opposite failure: an over-strict NLI comparator blocked correct short answers. Test an entailment comparator on correct answers as well as wrong ones.
+- [`examples/camerontjs-dot_numeric_comparison/`](examples/camerontjs-dot_numeric_comparison/RESULTS.md) shows a rule-based comparator for numbers catching a rounding error the keyword matcher accepted (section 14.1), within the limits of the formats it supports.
 
-Both are small, hand-built demonstrations, not accuracy benchmarks.
+All of these are small, hand-built demonstrations, not accuracy benchmarks.
 
 ---
 
@@ -577,11 +636,32 @@ For a `check_with_evidence()` result, `UNCERTAIN` means one of four things: the 
 
 ---
 
-# 30. Be Careful With High Latency or Cost Requirements
+# 30. Be Careful With Latency, Cost, and Prompt Overhead
 
 Retries mean additional LLM calls. `max_retries=2` can result in up to 3 model calls, so BOOTH can increase latency, token usage, and API cost. Use retries deliberately. If your application is extremely latency-sensitive, you may prefer `max_retries=0` and handle failures elsewhere.
 
 Small local models can also be slow on a malformed response: in the 3B Ollama run, default-format calls took 37 to 53 seconds against 10 to 17 for schema-constrained calls. That is one model on one machine, so measure your own setup.
+
+## 30.1 The default prompt can cost accuracy on reasoning-heavy tasks
+
+BOOTH adds output instructions to your prompt, and the default ones end with "Output ONLY the JSON object, nothing else." For a question that needs working out, that leaves a small model no room to think. In the benchmark above (100 questions, `qwen2.5:7b`, temperature 0):
+
+| Arm | Overall | GSM8K (maths) |
+| --- | --- | --- |
+| Plain call | 82.0% | 97.5% |
+| BOOTH's prompt, no gate | 50.0% | 35.0% |
+| `booth.check()` default | 42.0% | 35.0% |
+| `booth.check()` with room to reason | 65.0% | 92.5% |
+
+Most of the gap came from the prompt, not the gate, and letting the model reason first recovered the maths. It did not help the trivia or TruthfulQA questions, and it was about 1.8 times slower than the default.
+
+This does **not** reproduce on every model. On `gemma3:12b` (50 questions) the JSON prompt cost three GSM8K answers (17 of 20, against 20 of 20 for a plain call) and showed no collapse in answer length, and the reasoning arm recovered one of them (18 of 20) at about 1.5 times the latency (52.3 s against 36.0 s a question).
+
+What to do with that:
+
+- **Measure your own task.** Run a plain call and BOOTH side by side on a sample of your real questions, with the model you will use. The benchmark example is built for that: `run_example.py --model <tag>`.
+- **For reasoning-heavy tasks on small models, try reasoning mode.** Pass `suffix=booth.REASONING_SUFFIX` (Tutorial §3.9). Set a generous output-token limit, because a reply cut off before the JSON object is a parse failure. The model's working is kept in `attempt.pre_json_text`.
+- **Leave the default alone when it works.** The default prompt is unchanged in `v0.6.0`, and reasoning mode is opt-in.
 
 ---
 
@@ -637,9 +717,11 @@ If you can answer that clearly, BOOTH may be useful.
 | Question | Fit |
 | --- | --- |
 | "Is the response parseable?" | Good fit |
-| "Did the model identify that the question is ambiguous?" | Good fit |
-| "Does the answer satisfy my application rule?" | Good fit |
+| "Does the answer satisfy a rule my application can state?" | Good fit, the best-supported use |
 | "Did the answer meet my evidence comparator?" | Good fit |
+| "Did the model identify that the question is ambiguous?" | Good fit |
+| "Do I need the model's working kept for debugging?" | Good fit (reasoning mode and `pre_json_text`) |
+| "Will the model's own confidence alone catch its mistakes?" | No, not reliably |
 | "Can BOOTH tell me whether this fact is objectively true?" | No |
 | "Can BOOTH guarantee the model will not hallucinate?" | No |
 | "Can BOOTH make an autonomous agent safe?" | No |
@@ -663,8 +745,8 @@ A strong use of BOOTH is to make it **one checkpoint among several**.
         ┌──────────────────┐
         │      BOOTH       │
         │ • parse          │
-        │ • ambiguity      │
         │ • validator      │
+        │ • ambiguity      │
         │ • confidence     │
         │ • retry          │
         └────────┬─────────┘
@@ -693,10 +775,11 @@ BOOTH is a good candidate when several of these are true:
 - You already use an LLM.
 - The response needs a machine-readable structure.
 - Ambiguous questions are a meaningful problem.
-- You have application-specific validation rules.
+- You have application-specific validation rules, or a source of evidence you can compare against.
+- You can state the expected answer format and put it in the prompt.
 - A retry can realistically repair common failures.
 - You want a structured result instead of raw model text.
-- You want to inspect individual attempts.
+- You want to inspect individual attempts, including the model's working.
 - You have evidence and a meaningful comparison function.
 - Occasional additional LLM calls are acceptable.
 - You want a lightweight checkpoint without adopting a larger orchestration system.

@@ -2,7 +2,7 @@
 
 Known gotchas collected from real integration runs in `examples/`. Each entry follows the same shape: **symptom → cause → what to do**, with a link to where it was observed.
 
-The runs behind these entries used BOOTH 0.4.9 to 0.5.4. Entries 1, 3 and 4 were updated for v0.5.4, which added `call_failed`; entry 9 describes v0.5.5. Entry 10 comes from the benchmark in issues #32 and #33 (BOOTH 0.5.8, with the parser change from 0.5.9). If a later release changes behavior, the [CHANGELOG](CHANGELOG.md) is the source of truth.
+The runs behind these entries used BOOTH 0.4.9 to 0.5.4. Entries 1, 3 and 4 were updated for v0.5.4, which added `call_failed`; entry 9 describes v0.5.5. Entry 10 comes from the benchmark in issues #32 and #33 (BOOTH 0.5.8, with the parser change from 0.5.9) and was rewritten for v0.6.0, which added `suffix=`. If a later release changes behavior, the [CHANGELOG](CHANGELOG.md) is the source of truth.
 
 ## Contents
 
@@ -175,33 +175,30 @@ In these runs the model's self-reported confidence and its `AMBIGUOUS` flag did 
 **What to do.**
 
 1. Measure on your own model: `python examples/Vedantgitbot_latency_accuracy/run_example.py --model <tag>`, then compare the plain and BOOTH arms.
-2. If your tasks need reasoning, give the model room to reason before the JSON. Wrap your `call_fn` and replace BOOTH's closing sentence. Since 0.5.9 BOOTH uses the last valid top-level JSON object in the reply, so reasoning text before it is fine, and any draft object inside that reasoning is ignored.
+2. If your tasks need reasoning, give the model room to reason before the JSON. From v0.6.0, pass `suffix=booth.REASONING_SUFFIX`:
 
 ```python
 import booth
 
-ONLY_JSON = "Output ONLY the JSON object, nothing else."
-REASON_ENDING = (
-    "First think the problem through step by step in plain text. Then, as the "
-    "LAST thing in your reply, output the JSON object described above."
+result = booth.check(
+    call_llm,
+    "What is half of 12 * 4?",
+    suffix=booth.REASONING_SUFFIX,
 )
-
-def with_reasoning_room(call_llm):
-    def wrapped(prompt):
-        if ONLY_JSON not in prompt:
-            raise RuntimeError("BOOTH's prompt wording changed; update this wrapper")
-        return call_llm(prompt.replace(ONLY_JSON, REASON_ENDING))
-    return wrapped
-
-result = booth.check(with_reasoning_room(call_llm), "What is half of 12 * 4?")
 ```
 
-**Limits of the workaround.**
+`REASONING_SUFFIX` asks for the same JSON object as the default, but lets the model think first and put the JSON last. BOOTH uses the last valid top-level JSON object in the reply, so reasoning text before it is fine, and any draft object inside that reasoning is ignored. The text before the object is kept in `attempt.pre_json_text` if you want to log it.
 
-- It depends on BOOTH's current wording. If a later release changes that sentence, the wrapper raises. BOOTH records that as a failed call, so check `result.call_failed` (entry 1).
-- If a reply cannot be parsed, BOOTH's retry prompt still asks for JSON only ("no commentary"). Use `max_retries=0` if you want reasoning on every attempt.
-- It is slower: about 1.8 times the plain call's latency on Qwen 7B.
+The same suffix is sent on the first call and on every retry. With a custom suffix, the parse-failure retry no longer says "no commentary", so it does not contradict a suffix that asks for reasoning.
+
+To write your own, pass any non-empty string. It replaces the whole default instruction, including the JSON schema, so it must still ask for a JSON object with `answer` and `confidence`. It is used as given, so start it with a newline (`"\n\n..."`) or it will run into the end of your prompt. `booth.DEFAULT_SUFFIX` shows the default text to copy from.
+
+**Limits.**
+
+- Reasoning replies are longer. If your client caps output tokens, set the limit high enough for the working plus the JSON. A reply cut off before the JSON is a parse failure and spends a retry.
+- It is slower: about 1.8 times the plain call's latency on Qwen 7B in the benchmark.
 - It did not help trivia or multiple-choice questions in these runs.
-- A caller-supplied prompt suffix is being considered for a later release (#33).
+- The 92.5% figure above was measured with an equivalent wording before `suffix=` existed. Re-run the benchmark with `REASONING_SUFFIX` to check it on your model.
+- On v0.5.9 or earlier there is no `suffix=`. Upgrade, or wrap your `call_fn` and replace BOOTH's closing sentence, which breaks if that wording changes.
 
 **Seen in:** [`examples/Vedantgitbot_latency_accuracy`](examples/Vedantgitbot_latency_accuracy), issues [#32](https://github.com/Vedantgitbot/booth/issues/32) and [#33](https://github.com/Vedantgitbot/booth/issues/33).

@@ -2,972 +2,158 @@
 
 All notable changes to BOOTH are documented here. Versions follow
 [Semantic Versioning](https://semver.org/): additive, backward-compatible
-changes bump the minor version; small fixes/polish with no new public
-surface bump the patch version.
+changes bump the minor version; fixes, docs and tests bump the patch version.
+Contributors are credited in the release their work shipped in.
 
 ## [Unreleased]
 
-## [v0.5.9] — parser: the last valid top-level JSON object wins, nested objects are ignored
+## [v0.6.0] — 2026-11-23 — control the prompt suffix
 
-No public API change and no change to the default prompt. Two parser behaviours change, both for replies that contain more than one JSON object.
+You can now replace the output instructions BOOTH appends to your prompt. The default prompt and default behaviour are unchanged, byte for byte.
+
+### Added
+- **`suffix=`** (keyword-only) on `check()` and `acheck()`. It replaces the whole default suffix and is used verbatim, so include your own leading newline. It must be a non-empty `str` (`TypeError` or `ValueError` otherwise), and it is checked before any model call. The same suffix is sent on the first call and on every retry: low confidence, parse failure, validation failure and a failed call.
+- **`DEFAULT_SUFFIX`**: the current default prompt, now public. **`REASONING_SUFFIX`**: the same JSON schema, but the model may work the question out first as long as the JSON object comes last. Both are exported from `booth`. `_CONFIDENCE_SUFFIX` stays as an alias.
+- **`Attempt.pre_json_text`**: the text before the JSON object the parser selected, stripped (`""` if the object starts the reply). `None` when the parse failed or a custom `parse_fn` was used. It also appears in `to_dict()`.
 
 ### Changed
-- **The last valid top-level JSON object now wins.** When a reply contains several objects (for example a draft followed by a final answer), BOOTH used the first valid one. It now uses the last.
-- **Nested objects are no longer candidates.** A nested object with its own `answer` and `confidence` (for example inside `"meta"`) could replace the outer object's values, and an outer object rejected for a dict `answer` could be rescued by a nested one. Now the outer object decides: if it is invalid, the attempt is a parse failure and the retry fires.
-- **Parse errors describe the last object** in the reply when several are invalid.
+- **The validator now runs on ambiguous attempts too.** Before, `passed_validation` was always `True` on an ambiguous attempt because the validator never ran. Now it is honest. The result is still `AMBIGUOUS`, `ok` is still `False`, and nothing is retried. **Code that relied on the validator being skipped for ambiguous attempts will now see it called.**
+- **The parse-failure retry wording depends on the suffix.** With the default suffix it is the exact 0.5.x text. With any other suffix it no longer says "no commentary before or after it", which would contradict a suffix that asks for reasoning.
 
-### Internal
-- `_iter_raw_decoded_objects` is now `_iter_top_level_objects`. `_JSON_RE` and `_try_json` are removed.
+### Why
+On GSM8K, Qwen 7B scored 97.5% plain but 35.0% under the JSON-only prompt, and recovered to 92.5% when given room to reason (`examples/Vedantgitbot_latency_accuracy/`). Gemma 3 12B did not show the same collapse (#38). `suffix=` makes the prompt a choice instead of a fixed cost.
 
 ### Tests
-- Parser regression tests for candidate order, nested objects, fallback behaviour, retries and `acheck()` (#35, thanks @rk042).
-- `test_v049_regressions.py` now imports `_iter_top_level_objects`.
+- New `tests/test_v060_suffix.py`: default prompts pinned byte for byte, `check()`/`acheck()` parity, custom suffix on every retry type, validator on ambiguous attempts, `pre_json_text`, and long-reply parsing.
+- The two validator tests that pinned "never runs on an ambiguous attempt" were renamed and updated because the behaviour changed on purpose. 527 tests pass.
 
-### Examples (no library change)
-- `examples/Vedantgitbot_latency_accuracy/`: a latency and accuracy benchmark of plain calls against BOOTH, with a no-gate arm and a reasoning-room arm. Findings are in its `RESULTS.md` (see #32, #33).
+### Internal
+- `_iter_top_level_objects_with_pos` added; `_iter_top_level_objects` kept as a wrapper. The prompt builders take an optional `suffix` argument.
 
 ### Docs
-- README: Featured section, contributor thanks, and a note on accuracy with reasoning-heavy tasks.
-- TUTORIAL: new §3.8 on how the default parser picks the JSON object; version references updated.
-- TROUBLESHOOTING: new entry 10, accuracy on reasoning-heavy tasks, with a workaround recipe.
+- TUTORIAL: suffix, templates and the ambiguous-attempt behaviour.
 
-## [v0.5.8] — malformed numeric and deeply nested model output no longer crashes check()/acheck()
+### Credits
+@camerontjs-dot (Gemma 3 12B replication #38, numeric comparison #39, format limits #40), @gal-a (edge-case tests #42, #43, #45, and the [qikly](https://github.com/gal-a/qikly) mutation-testing runs that found the gaps), @rk042 (calibration example #37, scope feedback in Discussion #34).
 
-- **Fixed: malformed numeric and deeply nested model output.** JSON decoding
-  failures (including oversized integers and excessive nesting), confidence
-  overflow, and oversized parsed answers now yield an ordinary parse-failure
-  attempt in `check()` and `acheck()`, rather than raising to the caller. The
-  existing retry prompt and `call_failed=False` distinction are preserved.
-  Regression tests cover both entry points and the `parse_fn` path.
-  JSON nested deeper than 1024 levels is now treated as a parse failure
-  (thanks @Kaan081, #31). Fixes #30.
+## [v0.5.9] — 2026-11-13 — parser: last valid top-level JSON object wins
 
-## [v0.5.7] — parse_fn structured-output escape hatch
+- The last valid top-level JSON object is used, not the first. Nested objects are never candidates. Parse errors describe the last object.
+- Internal: `_iter_raw_decoded_objects` is now `_iter_top_level_objects`; `_JSON_RE` and `_try_json` removed.
+- Docs: TUTORIAL §3.8 (parser rules), TROUBLESHOOTING entry 10, README Featured section.
+- Example: `examples/Vedantgitbot_latency_accuracy/` (plain vs BOOTH, with a reasoning-room arm).
+- Credits: @rk042 (parser regression tests, #35).
 
-- CI: added a mypy job that type-checks `src/booth/` against the Python 3.9 target (thanks @rk042, #25). mypy is installed via a new `typecheck` extra, not `dev`. No library change.
-- **Added a structured-output escape hatch.** `check()` and `acheck()` can now use a synchronous `parse_fn` for provider-specific string decoding. The parser result feeds the existing validation, retry, confidence, ambiguity, and `BoothResult` pipeline; normal string parsing is unchanged. (thanks @rk042, #26). Fixes #6.
+## [v0.5.8] — 2026-11-01 — malformed model output no longer crashes
 
-## [v0.5.6] — Iterable[str] type hint for evidence; docs and packaging fixes
+- Malformed numbers, oversized integers and JSON nested deeper than 1024 levels now give an ordinary parse-failure attempt instead of raising. Fixes #30.
+- Examples: Ollama Qwen 3B (#27) and independent sample agreement (#29).
+- Credits: @Kaan081 (fix, #31), @rk042 (examples).
 
-- **Fixed: the `evidence` type hint.** `check_with_evidence()` has accepted
-  generators and iterators since v0.5.5, but `evidence` was still annotated
-  `Sequence[str]`, so mypy and pyright (BOOTH ships `py.typed`) rejected input
-  the code handles. It is now `Iterable[str]`. `CompareFn` stays
-  `Sequence[str]`, because one-shot iterators are converted to a list before
-  `compare_fn` is called. No runtime change.
-- **Cleanup, no behavior change:** removed leftover development comments from
-  `core.py`.
-- **Docs:** README links are now absolute so they work on the PyPI page, and
-  the README lists the two new examples. TUTORIAL covers the non-callable
-  `validator` error and generator evidence. TROUBLESHOOTING 7 to 9 and the new
-  USECASES §27 note describe what the comparator examples found.
-- **Tests:** added `test_v056_regressions.py` (the annotation, set evidence,
-  unchanged behavior after the refactor, no leftover markers).
+## [v0.5.7] — 2026-10-29 — `parse_fn`
 
-## [v0.5.5] — one-shot evidence iterators; non-callable validator rejected upfront; Python 3.13-3.15 CI
+- `parse_fn=` on `check()`/`acheck()`: a synchronous hook for provider-specific structured output. Its result goes through the normal validation, retry and `BoothResult` pipeline. Fixes #6.
+- CI: mypy job against the Python 3.9 target (`typecheck` extra).
+- Credits: @rk042 (#25, #26).
 
-- **Fixed: `check_with_evidence()` and evidence without `len()`.** A generator,
-  iterator, `map` or `filter` object is always truthy, so an empty one skipped
-  the `NO_EVIDENCE` check, and a non-empty one could be exhausted by the first
-  read inside `compare_fn`, leaving a second read with nothing. Evidence that
-  has no `len()` is now converted to a list once, before the empty check, and
-  `compare_fn` receives that list. Anything with `len()` (list, tuple, string,
-  numpy array) is passed through as the same object, so existing callers see no
-  change. `None` still returns `NO_EVIDENCE`.
-- **Behavior to know:** an exception raised inside the caller's own generator
-  while it is being converted propagates to the caller. It is not reported as
-  `COMPARE_FAILED`, because the failure happened in the caller's code before
-  the checkpoint ran. This includes a `TypeError` raised inside the generator.
-  `answer` is validated first, so a rejected answer does not drain the
-  caller's iterator.
-- **Changed: a non-callable `validator` now raises `TypeError` upfront** in
-  `check()` and `acheck()`, before any `call_fn` runs, the same way
-  `on_attempt` has been handled since v0.5.3. Before this release a
-  non-callable validator failed every attempt, spent `max_retries + 1` LLM
-  calls, and returned `UNCERTAIN` with `method == "validation"`. Code that
-  passed a non-callable validator by mistake and relied on getting `UNCERTAIN`
-  will now get an exception instead. `validator=None` and callable validators
-  (including callable objects) are unaffected, and an `async def` validator
-  still receives the existing "must be synchronous" rejection.
-- **Tests:** added `test_v055_regressions.py` covering one-shot and empty
-  evidence, same-object passthrough for lists, tuples and numpy arrays, a
-  comparator that reads evidence twice, generator errors propagating,
-  non-callable validators in `check()` and `acheck()` with zero `call_fn`
-  calls, and a check that `booth.__version__` matches `pyproject.toml`.
-  The v0.5.3 test `test_non_callable_validator_degrades_gracefully_not_crash`
-  was replaced by `test_non_callable_validator_rejected_upfront_since_v055`,
-  because the behavior it pinned changed on purpose.
-- **CI and packaging:** the test matrix now covers Python 3.9 to 3.15, with
-  `fail-fast: false`. 3.15 runs as a prerelease and is allowed to fail until it
-  has run clean. numpy is installed in CI only (an optional step) so the
-  numpy-specific tests run; BOOTH itself still has no dependencies. Added the
-  3.13 to 3.15 classifiers (Python 3.15 is a prerelease) and `Documentation`,
-  `Changelog` and `Issues` entries under `[project.urls]`.
-- **Examples (no library change):** added `examples/camerontjs-dot_compare_fn/`
-  (keyword matcher vs a pinned DeBERTa NLI comparator on identical inputs,
-  4/10 vs 9/10 against the authored expectations, with a conflicting-evidence
-  case kept as a failure) and `examples/Harithalakshmikt_langchain_flan/`
-  (LangChain + FAISS + FLAN-T5 with an NLI `compare_fn`, including two correct
-  answers that were blocked). Both ran against 0.5.4 and found no BOOTH bug;
-  their findings are about comparator design (TROUBLESHOOTING 7 and 8).
+## [v0.5.6] — 2026-10-20 — type hint and docs
 
-## [v0.5.4] — call_fn failures are now distinguishable; correct retry prompt after a failed call
+- `evidence` is now typed `Iterable[str]` (generators were already accepted). No runtime change.
+- README links made absolute for PyPI; leftover dev comments removed.
 
-A failed `call_fn` (bad key, retired model, network error, quota) used to look
-exactly like a model that returned garbage: `UNCERTAIN`, `method ==
-"parse_failure"`, `all_parse_failed == True`. The error was recorded on
-`attempt.error`, but nothing marked the attempt as a *call* failure, so a
-caller couldn't branch on "my API call is broken" versus "the model answered
-badly" without guessing. Reported in #9 and hit independently by a second
-contributor while running the Gemini example.
+## [v0.5.5] — 2026-10-20 — evidence iterators, validator check, CI
 
-- **Added `Attempt.call_failed: bool`** (default `False`). `True` when
-  `call_fn` raised, or returned something other than a `str` (so there was no
-  response to parse).
-- **Added `BoothResult.call_failed`**, a computed property: `True` only when
-  *every* attempt failed because `call_fn` failed. Same rule as
-  `all_parse_failed`, derived from the attempts rather than stored. A call that
-  fails once and then succeeds is `REPAIRED` with `call_failed == False`; the
-  blip is still visible per attempt via `attempt.call_failed`.
-- **`status` and `method` are unchanged.** A call failure still reports
-  `UNCERTAIN` / `"parse_failure"`, so existing code that branches on those keeps
-  working. `call_failed` is the new, additive signal. Changing `method` for this
-  case would be a behavior change and is left for a future breaking release.
-- **`to_dict()`** gained a top-level `"call_failed"` key. Each entry in
-  `"attempts"` includes `call_failed` automatically.
-- **Retry prompt after a failed call.** After a failed call the retry used to
-  send the "your previous response could not be parsed" prompt, even though no
-  response existed. It now sends the original prompt, exactly as in the first
-  attempt. Retries after a garbage response, low confidence, or a validation
-  failure are unchanged.
-- **Cleanup, no behavior change:** trimmed long historical comments and
-  docstrings in `core.py` down to the ones that explain non-obvious code, moved
-  the duplicated "call_fn raised" attempt construction into one helper, and
-  removed a dead `answer or None` in the `NO_EVIDENCE` branch (`answer` is
-  always non-empty there).
-- **Note for callers:** BOOTH can't tell a temporary failure from a permanent
-  one (a 401 will fail again on retry) without knowing each provider's error
-  types, which would break provider-agnosticism. Use `result.call_failed` to
-  stop early or alert, or pass `max_retries=0` if you expect config errors.
-- **New regression test file** (`test_v054_regressions.py`) covering: the flag
-  on raised calls and non-`str` returns (`None`, `dict`, `int`, `list`); garbage
-  responses and low confidence *not* being call failures; the "every attempt"
-  rule for mixed histories (fail then succeed, low confidence then fail, fail
-  then ambiguous); `status`/`method` staying unchanged; `on_attempt` seeing the
-  flag; `unwrap()` on a call failure; `check_with_evidence()` results never
-  being `call_failed`; `acheck()` parity; `to_dict()` output staying
-  JSON-serializable; and the retry prompt being identical to the first prompt
-  after a failed call while still being the parse-failure, reconsider and
-  validation prompts in the cases that should keep them.
+- `check_with_evidence()` converts one-shot iterators to a list once, so empty generators hit `NO_EVIDENCE` and `compare_fn` can't exhaust the input.
+- A non-callable `validator` now raises `TypeError` upfront, before any model call. Before, it burned every retry and returned `UNCERTAIN`.
+- CI matrix covers Python 3.9–3.15.
+- Examples: `compare_fn` NLI comparison (#23), LangChain + FLAN-T5 (#22). TROUBLESHOOTING (#14).
+- Credits: @camerontjs-dot (#23), @Harithalakshmikt (#22), @AkashGoswamy (TROUBLESHOOTING, #14).
 
-## [v0.5.3] — on_attempt callable validation; py.typed (PEP 561); SPDX license metadata
+## [v0.5.4] — 2026-10-08 — `call_failed`
 
-- **Added `py.typed` marker (PEP 561)** and `package-data` config so the
-  type hints ship in the wheel and are visible to mypy/pyright/Pylance.
-  Contributed by @AK-Lmn (#16). Also adds an `attempt.confidence is not
-  None` guard in `_evaluate()` to satisfy type checkers; no runtime
-  behavior change, since `parse_ok=True` always comes with a float
-  confidence.
-- **Packaging:** `license` moved to the SPDX string form (`"MIT"`) with
-  `license-files`, and the `License ::` classifier was dropped, clearing
-  the setuptools deprecation warning. Build now requires `setuptools>=77`.
-- **Audit notes (no code change):** a non-callable `compare_fn` is caught
-  and returned as `COMPARE_FAILED`. A non-callable `validator` does not
-  crash but fails validation on every attempt, spending the full retry
-  budget; an upfront check is a candidate for a later release.
-- **Tests:** `test_v053_regressions.py` covers a non-callable `on_attempt`
-  being rejected upfront in `check()` and `acheck()` with `call_fn` never
-  called, `None` and valid sync and async callbacks still working, and an
-  async `on_attempt` in `check()` still getting its own specific error. It also
-  pins that a non-callable `compare_fn` degrades to `COMPARE_FAILED`.
+- `Attempt.call_failed` and `BoothResult.call_failed` tell a failed `call_fn` (bad key, network, quota) apart from a model that answered badly. `status` and `method` are unchanged. Reported in #9.
+- After a failed call, the retry re-sends the original prompt instead of "could not be parsed".
+- `py.typed` marker (PEP 561). Credit: @AK-Lmn (#16).
 
-## [v0.5.2] — check_with_evidence() whitespace-answer / boolean-detail fixes; prompt/call_fn type validation
+## [v0.5.3] — 2026-10-05
 
-Three fixes, shipped together. The first two are contained inside
-`check_with_evidence()`, in the same spirit as v0.5.1's reason/detail
-work; the third closes a validation gap in `check()`/`acheck()` left
-over after `max_retries` (v0.4.8) and `evidence_threshold` (v0.4.9)
-were hardened but `prompt`/`call_fn` themselves were not.
+- `on_attempt` is validated as callable upfront. SPDX license metadata; setuptools >= 77.
+- Examples and docs: README overhaul (#7, @sohanpal17), Gemini (#8, @AkashGoswamy), Ollama (#10, @Maintythehuman; #13, @sohanpal17), Anthropic (#11, @opencode13241-eng).
 
-- **Whitespace-only `answer` was not normalized to `None` in the
-  `EMPTY_ANSWER` result.** The `EMPTY_ANSWER` branch returned
-  `answer=answer or None`, which only normalizes a falsy (empty)
-  string — a whitespace-only string like `"   "` is truthy in Python,
-  so it passed through into `.answer` untouched, even though the same
-  branch's `detail` already reads `"answer was empty or
-  whitespace-only"` for both cases. Two inputs producing an identical
-  `status`/`reason`/`detail` triple ended up with different `.answer`
-  representations (`None` vs. the literal whitespace string). Since
-  the entire premise of this branch is "there is no usable answer",
-  `.answer` is now unconditionally `None` here for both the
-  empty-string and whitespace-only cases.
-- **`BLOCKED` result `detail` implied a threshold comparison even for
-  a boolean `compare_fn` rejection.** §7.4 documents that
-  `evidence_threshold` is not applied at all to a boolean
-  `compare_fn` return — it's treated as a strict pass/fail. But the
-  `detail` string on a `BLOCKED` result was built from shared code
-  that always read `f"score {score} below evidence_threshold
-  {evidence_threshold}"`, regardless of which path produced it. A
-  `compare_fn` returning `False` therefore produced a `detail`
-  describing a threshold comparison that never actually happened —
-  misleading for exactly the audience `detail` is documented to serve
-  (§7.8: "the thing to log or show a human"). The boolean path now
-  produces `detail="compare_fn returned False"`; the numeric/score
-  path is unchanged.
-- **`check()`/`acheck()` had no type validation for `prompt` or
-  `call_fn`.** Every other entry-point argument (`threshold`,
-  `max_retries`, `evidence_threshold`) has raised a clear `TypeError`
-  at the call site since v0.4.8/v0.4.9, but `check(fn, 123)` still
-  crashed several frames deep inside `_build_prompt()` with a bare
-  `AttributeError: 'int' object has no attribute 'rstrip'`, and a
-  non-callable `call_fn` crashed with a generic `TypeError` from deep
-  inside the retry loop instead of a message naming the actual
-  mistake. New `_validate_call_args()` checks `isinstance(prompt,
-  str)` and `callable(call_fn)` up front in both `check()` and
-  `acheck()`, before any other validation runs — same discipline,
-  same message shape, as the existing guards.
-- **New regression test file** (`test_v052_regressions.py`) covering:
-  an empty-string and a whitespace-only `answer` both producing
-  `result.answer is None` (previously only the empty-string case did);
-  `detail` for both cases still reading `"answer was empty or
-  whitespace-only"`; a boolean-`False` `compare_fn` producing
-  `detail == "compare_fn returned False"` with no `evidence_threshold`
-  value appearing in it; a numeric `compare_fn` score below threshold
-  still producing the existing `"score X below evidence_threshold Y"`
-  message unchanged; `check()` and `acheck()` both raising `TypeError`
-  immediately for a non-`str` `prompt` (an `int`, `None`, a `list`)
-  without ever calling `call_fn`; `check()` and `acheck()` both
-  raising `TypeError` immediately for a non-callable `call_fn` (a
-  plain string, an `int`) without entering the retry loop; and a
-  confirmation that a genuine `str` prompt and callable `call_fn` are
-  completely unaffected by the new checks, for both entry points.
-- Verified against the full existing suite (`test_acheck.py`,
-  `test_core.py`, `test_evidence.py`, `test_method.py`,
-  `test_parsed.py`, `test_validator.py`, and
-  `test_v045_regressions.py` through `test_v051_regressions.py`) with
-  zero modifications required to any existing test — all three fixes
-  are either a narrowing of previously-undefined behavior
-  (whitespace-answer normalization, boolean-detail wording) or a new
-  validation guard with no existing caller ever intentionally relying
-  on the old crash (non-str prompt / non-callable call_fn).
+## [v0.5.2] — 2026-09-27
 
+- `check_with_evidence()`: whitespace-only answers give `answer=None`; a boolean `compare_fn` rejection gets an accurate `detail`.
+- `check()`/`acheck()` raise a clear `TypeError` for a non-`str` prompt or non-callable `call_fn`.
 
+## [v0.5.1] — 2026-09-25
 
-## [v0.5.1] — check_with_evidence() reason / detail / checker_failed
+- `BoothResult.reason`, `.detail` and `.checker_failed` on `check_with_evidence()` results, with five reason codes (`EMPTY_ANSWER`, `NO_EVIDENCE`, `COMPARE_FAILED`, `INVALID_SCORE`, `EVIDENCE_DISAGREES`).
 
-`check_with_evidence()` previously returned `UNCERTAIN` from a single
-construction site reused for four unrelated causes — a blank answer,
-empty evidence, a crashing `compare_fn`, and a malformed score — plus
-one further `BLOCKED` site for a genuine evidence disagreement. A
-caller had no way to distinguish "your evidence list was empty, fix
-your retrieval" from "your comparator crashed, fix your code" from
-"the answer genuinely disagreed, that's a real verdict" without
-reading `check_with_evidence()`'s internals — internals that don't
-even populate `attempts`, so the usual `result.method` /
-`result.attempts` diagnostic path this library relies on elsewhere
-doesn't apply on this path at all.
+## [v0.5.0] — 2026-09-22
 
-- **Added `BoothResult.reason: Optional[str]`.** Populated only by
-  `check_with_evidence()`; `None` on every `check()`/`acheck()`
-  result, via the existing dataclass default — no code changes needed
-  in either of those paths. One of five fixed string codes:
-  - `EMPTY_ANSWER` — the answer was empty or whitespace-only
-  - `NO_EVIDENCE` — the evidence sequence was empty
-  - `COMPARE_FAILED` — `compare_fn` raised an exception
-  - `INVALID_SCORE` — `compare_fn` returned something that couldn't be
-    used as a score: non-numeric, or numeric but outside `[0.0, 1.0]`
-  - `EVIDENCE_DISAGREES` — a genuine comparison ran and the answer
-    scored below `evidence_threshold` (the existing `BLOCKED` case)
-- **Added `BoothResult.detail: Optional[str]`.** Free text describing
-  the specific instance — e.g. `"evidence sequence was empty"`, or for
-  a crashing `compare_fn`, the exception type and a truncated message
-  (`f"{type(e).__name__}: {str(e)[:200]}"`, matching the existing
-  truncation discipline already used for `Attempt.error` and
-  `BoothRejected`'s message — never dump a raw, unbounded exception
-  into a result). `None` whenever `reason` is `None`.
-- **Added `BoothResult.checker_failed: bool`**, a computed property —
-  no new stored state — `True` iff `reason` is `COMPARE_FAILED` or
-  `INVALID_SCORE`. These two codes mean the *checker itself* is at
-  fault (a broken comparator, a caller bug), as distinct from
-  `EMPTY_ANSWER`/`NO_EVIDENCE` (the caller's inputs were incomplete)
-  or `EVIDENCE_DISAGREES` (a real, meaningful verdict about the
-  answer). Because it's derived from `reason` rather than set
-  separately, it can never drift out of sync with it.
-- **One structural change, contained entirely inside
-  `check_with_evidence()`:** the previous combined
-  `if not answer or not answer.strip() or _is_empty_evidence(evidence)`
-  guard is split into two separate `if` checks, since `EMPTY_ANSWER`
-  and `NO_EVIDENCE` need to be distinguishable and were previously the
-  same branch. No other control flow changed — every other edit is a
-  bare `BoothResult(...)` return gaining `reason=`/`detail=` keyword
-  arguments, with no new branches.
-- **`to_dict()`** gained the three new keys (`"reason"`, `"detail"`,
-  `"checker_failed"`), same mechanical one-line-per-field pattern
-  already used for every other field there.
-- **Zero edits** to `_evaluate()`, `_next_prompt()`,
-  `_parse_response()`, `_finalize_uncertain()`, `check()`, or
-  `acheck()`. Appending two new `Optional`-with-`None`-default fields
-  to the `BoothResult` dataclass is positionally safe because every
-  existing `BoothResult(...)` construction site in the codebase
-  already uses keyword arguments — confirmed by scanning all five
-  pre-existing sites (`_evaluate`'s two, `_finalize_uncertain`,
-  `check_with_evidence`'s original two) before making the change.
-- **New regression tests** covering all five reason codes reachable
-  from `check_with_evidence()`, `checker_failed` returning `True` only
-  for `COMPARE_FAILED`/`INVALID_SCORE` and `False` for every other
-  reason (including `None`), `reason`/`detail`/`checker_failed` all
-  defaulting correctly (`None`/`None`/`False`) on `check()` and
-  `acheck()` results, `to_dict()` including all three new keys, and a
-  truncation check confirming a `compare_fn` exception with a very
-  long message is cut to 200 characters in `detail` rather than
-  reproduced in full.
-- **Packaging:** the logo `<img>` in `README.md` used a path relative
-  to the repo (`assets/Booth_logo.png`). GitHub resolves that against
-  the repo tree and renders it fine; PyPI renders `long_description`
-  in isolation with no base URL to resolve a relative path against, so
-  the same README rendered on the PyPI project page with a broken
-  image. Changed to an absolute
-  `https://raw.githubusercontent.com/...` URL, which resolves
-  identically on both GitHub and PyPI. No content change otherwise.
+- `BoothResult.unwrap()`, `unwrap_or()` and `BoothRejected`. Development Status moves to Beta.
+- Added the `examples/` directory (Groq example first), plus CODE_OF_CONDUCT, CONTRIBUTING, SECURITY and issue/PR templates.
 
-## [v0.5.0] — BoothResult.unwrap() / unwrap_or() / BoothRejected; Development Status: Beta
+## [v0.4.9] — 2026-09-18
 
-The first `0.x` release that's purely additive rather than a bugfix
-batch — no existing behavior changed, no existing test needed to
-change. `pyproject.toml`'s `Development Status` classifier moves from
-`3 - Alpha` to `4 - Beta`: ten releases in, with a consistent
-reproduce-first fix discipline and 208 tests carried forward with zero
-regressions across the whole run, BOOTH has moved past the
-"exploratory hack" stage this classifier is meant to signal.
+- Empty answers are rejected (except when ambiguous). A valid JSON object inside prose is recovered even when its answer contains braces. Numeric and boolean answers are coerced to strings.
+- `check_with_evidence()` handles a non-str answer, numpy evidence and an async `compare_fn` cleanly. `evidence_threshold` is type-checked. Every parse failure records `Attempt.error`.
 
-- **Added `BoothResult.unwrap()`.** `.answer` is typed
-  `Optional[str]` and stays populated even on a rejected result
-  (`AMBIGUOUS`/`UNCERTAIN`/`BLOCKED`) — deliberately, for debugging
-  and logging visibility — which means a caller who forgets to check
-  `.ok` or `.status` first can silently ship a rejected answer with no
-  error at all. `unwrap()` returns `.answer` as a plain `str` when the
-  result is ok, and raises `BoothRejected` otherwise. It uses exactly
-  the same predicate as `.ok` — it literally calls `self.ok`
-  internally rather than reimplementing the check — so the two can
-  never drift apart from each other. This is purely additive: `.answer`
-  is completely unchanged, on every status, for every existing caller.
-  `unwrap()` is a stricter, opt-in accessor layered on top, not a
-  replacement.
-- **Added `BoothRejected`**, the exception `unwrap()` raises. Carries
-  the full original `BoothResult` as `.result`, so catching it loses
-  no diagnostic information — `.result.status`, `.result.method`,
-  `.result.attempts`, everything is still reachable from inside the
-  `except` block. The exception's own string message deliberately
-  excludes the raw rejected answer text: exception messages routinely
-  end up in logs, and a rejected answer is exactly the kind of content
-  that shouldn't be logged by default just because someone called
-  `unwrap()`. The message does include `status` and `method`; the
-  rejected text itself is reachable explicitly via `e.result.answer`
-  if actually needed.
-- **Added `BoothResult.unwrap_or(default)`.** Same idea as `unwrap()`,
-  but returns `default` instead of raising when the result isn't ok —
-  for callers who'd rather write a plain fallback value than a
-  `try`/`except` at the call site.
-- **New regression test file** (`test_v050_regressions.py`, 20 tests)
-  covering: `unwrap()` returning the answer on `ACCEPTED` and
-  `REPAIRED`, from both `check()` and `acheck()` results, and from
-  `check_with_evidence()`; `unwrap()` raising `BoothRejected` on
-  `AMBIGUOUS`, `UNCERTAIN`, and `BLOCKED`; a parity test asserting
-  `unwrap()`'s predicate matches `.ok` exactly across every reachable
-  status, constructed as a single scenario matrix rather than five
-  separate near-duplicate tests; `.answer` confirmed still populated
-  on rejected results even after `unwrap()` has been called on the
-  same result object; `BoothRejected.result` carrying the exact same
-  object the caller already had; a planted "secret-looking" answer
-  string confirmed absent from `str(BoothRejected)` while still
-  reachable via `e.result.answer`; `unwrap_or()` returning the real
-  answer when ok and the default otherwise, and confirmed to never
-  raise regardless of status; and two defensive tests against a
-  hand-built `BoothResult` (not reachable through the public API) to
-  confirm `unwrap()` can't return `None` from a function typed to
-  return `str`.
-- Verified against the full test suite carried forward unmodified from
-  `v0.4.9` (208 tests across `test_acheck.py`, `test_core.py`,
-  `test_evidence.py`, `test_method.py`, `test_parsed.py`,
-  `test_validator.py`, and `test_v045_regressions.py` through
-  `test_v049_regressions.py`) — 228 total, zero modifications to any
-  existing test.
+## [v0.4.8] — 2026-09-13 — BREAKING
 
-## [v0.4.9] — bugfix batch: empty-answer guard, brace-parsing fallback, check_with_evidence() robustness, numeric/bool answers, error reasons, evidence_threshold validation
+- **`VERIFIED` renamed to `ACCEPTED`**, with no alias. The status string changed too.
+- `check()` rejects an async `call_fn`; a non-string `call_fn` return becomes a failed attempt; non-int `max_retries` raises; a dict/list `answer` is rejected instead of stringified.
 
-Six fixes, shipped together in the order below. All were reproduced
-against the actual `v0.4.8` release before being fixed here, and all
-208 tests (177 carried over unmodified, 31 new) pass with zero
-regressions to any existing test.
+## [v0.4.7] — 2026-09-10
 
-- **An empty or whitespace-only `answer` was silently accepted as
-  `ACCEPTED` at high confidence.** Nothing in `_parse_response()`
-  rejected `{"answer": "", "confidence": 0.99}` — a blank answer with
-  no content at all could pass every check purely because the
-  self-reported confidence was high. Now rejected the same way an
-  out-of-range confidence already is, with one deliberate exemption:
-  an `AMBIGUOUS` attempt is exempt from this guard, since the model
-  may legitimately leave `answer` blank while relying on
-  `interpretations` to carry the real content instead.
-- **Brace-like content inside `answer` could defeat the fallback JSON
-  extractor.** The flat `_JSON_RE` regex (`\{[^{}]*\}`) only matches an
-  object with no nested braces at all, so a *complete, valid* JSON
-  object embedded in surrounding commentary — where the object's own
-  `answer` string happens to contain brace-like text, e.g. `"the
-  config is {mode: fast, retries: 3}"` — could never be recovered by
-  regex alone, even though nothing about the object was actually
-  malformed. `json.JSONDecoder.raw_decode` is now tried as a further
-  fallback, scanning for every `{` in the text and attempting a real,
-  balanced parse from that position — it correctly treats braces
-  inside a JSON string value as ordinary content rather than
-  structure, which a flat regex fundamentally cannot do. This runs in
-  addition to the existing regex pass, not instead of it: the regex
-  stays first since it's cheap and covers the common case, and
-  `raw_decode` is the slower, more thorough fallback. Genuinely
-  malformed JSON (e.g. a response missing its closing brace entirely)
-  still correctly fails to parse — this fix recovers *valid* objects
-  that were previously unreachable, it does not start inferring
-  results out of broken input.
-- **`check_with_evidence()` crashed instead of failing predictably on
-  three different malformed inputs.** All three are now handled
-  explicitly:
-  - A non-`str`, non-`None` `answer` (an `int`, a `list`, etc.)
-    previously crashed with `AttributeError` on `answer.strip()`. Now
-    raises `TypeError` immediately, naming the offending type.
-    `answer=None` is unaffected — it already short-circuited safely
-    and still returns `UNCERTAIN`.
-  - `evidence` passed as a multi-element `numpy` array crashed the
-    emptiness check (`not evidence`) with `ValueError: the truth value
-    of an array is ambiguous`. A new `_is_empty_evidence()` helper uses
-    `len()` instead, which works correctly for anything sized —
-    `numpy` arrays included — without ever consulting `__bool__`.
-  - An `async def compare_fn`, or a synchronous wrapper that itself
-    returns a coroutine (e.g. `lambda a, e: some_async_fn(a, e)`),
-    doesn't raise when called — it just hands back an un-awaited
-    coroutine object. This previously either crashed confusingly
-    inside the later `float()` conversion or silently fell through to
-    `UNCERTAIN`, and either way leaked a "coroutine was never awaited"
-    `RuntimeWarning`. Now detected explicitly and rejected with a
-    clear `TypeError`, the same discipline `_run_validator()` already
-    applies to an async `validator`.
-- **Numeric and boolean `answer` values are now accepted instead of
-  treated as parse failures.** A model returning `{"answer": 42}` was
-  previously rejected outright by the `v0.4.8` non-string-answer guard,
-  which was written to stop a `dict`/`list` `answer` from being
-  silently `str()`-coerced into a misleading Python repr. That guard
-  was correct for structured values but too broad — a genuine scalar
-  like an `int`, `float`, or `bool` is not the same failure mode. `int`,
-  `float`, and `bool` answers are now coerced to their string form
-  (`42` → `"42"`) for the normalized `.answer` field, the same split
-  already used for `confidence` (`.confidence` is coerced,
-  `.parsed["confidence"]` keeps the raw value) — `.parsed["answer"]`
-  keeps the original, uncoerced type. `dict` and `list` values are
-  still rejected exactly as before; only the scalar case changed.
-- **`Attempt.error` was left `None` on most parse failures**, even
-  though a `call_fn` exception or a non-string `call_fn` return already
-  populated it with a specific reason. Every rejection path inside
-  `_parse_response()` (missing keys, wrong types, out-of-range
-  confidence, unrecognized `ambiguous` value, empty answer, no JSON
-  found at all) now records a specific, human-readable reason — e.g.
-  `"'confidence' 17.0 is out of the [0.0, 1.0] range"` — instead of
-  leaving the field blank on total parse failure.
-- **`evidence_threshold` had no type validation**, unlike `max_retries`
-  (fixed in `v0.4.8`). A `str` or `None` value produced Python's
-  generic comparison `TypeError` deep inside `0.0 <= evidence_threshold`
-  instead of a clear error at the call site. Now raises `TypeError`
-  immediately for anything that isn't a real number. Deliberately
-  stricter than `max_retries` on one point: `bool` is also rejected
-  here, not treated as harmless — a threshold silently becoming
-  "require a perfect 1.0" or "accept anything" is far more likely to
-  be a caller mistake than an intentional choice, unlike `max_retries`
-  where `True`/`False` meaning 1/0 retries is a reasonable reading.
-- **New regression test file** (`test_v049_regressions.py`, 31 tests)
-  covering all six items above, plus: the empty-answer guard correctly
-  exempting `AMBIGUOUS` attempts; the `raw_decode` fallback recovering
-  a nested-brace answer embedded in prose while a genuinely incomplete
-  JSON object (missing closing brace) still correctly fails safe;
-  `check_with_evidence()`'s non-str-`answer` and async-`compare_fn`
-  fixes producing zero leaked `RuntimeWarning`s (verified by promoting
-  `RuntimeWarning` to a raised exception for the duration of that
-  assertion); numeric/float/boolean `answer` values all coercing
-  correctly while `.parsed` keeps the raw type; and
-  `evidence_threshold` rejecting `str`/`None`/`bool` while still
-  accepting a plain `int` and still raising `ValueError` (not silently
-  swallowed by the new type check) for an in-type but out-of-range
-  value like `1.5`.
-- Verified against the actual published `v0.4.8` sdist pulled from
-  PyPI: all 177 existing tests across `test_acheck.py`,
-  `test_bugfixes_0_4_4.py`, `test_core.py`, `test_evidence.py`,
-  `test_method.py`, `test_parsed.py`, `test_v045_regressions.py`,
-  `test_v046_regressions.py`, `test_v047_regressions.py`, and
-  `test_validator.py` pass unmodified against the new `core.py` — no
-  existing test needed to change to accommodate this batch.
+- Async `on_attempt` detection fixed (objects with `async def __call__`). Added `BoothResult.to_dict()`.
 
-## [v0.4.8] — BREAKING: VERIFIED renamed to ACCEPTED; bugfix batch: async call_fn/non-str return/max_retries/non-str answer
+## [v0.4.6] — 2026-09-07
 
-**BREAKING CHANGE:** `VERIFIED` is renamed to `ACCEPTED`. There is no
-backward-compatible alias, per explicit decision: fix the naming early,
-while BOOTH has few real dependents, rather than carry a misleading
-name forward. `from booth import VERIFIED` now raises `ImportError`;
-every caller must move to `booth.ACCEPTED`. The underlying status
-*string* also changed, from `"VERIFIED"` to `"ACCEPTED"` — not just the
-importable constant — so any code comparing against a hardcoded
-`"VERIFIED"` string literal (rather than the exported constant) will
-silently stop matching. This was always the wrong pattern to rely on;
-the constant was always the documented interface.
+- `acheck()` accepts objects with `async def __call__`. An async `validator` no longer leaks a "never awaited" warning.
 
-Four confirmed bugs, fixed together as one release, all reproduced
-against the actual v0.4.7 tag before being fixed here:
+## [v0.4.5] — 2026-09-05
 
-- **`check()` had no defense against an async `call_fn`.** `acheck()`
-  already rejected the opposite (sync `call_fn` passed to `acheck()`)
-  direction symmetrically, but `check()` had no equivalent guard: an
-  async `call_fn` passed to `check()` returned a coroutine object,
-  which `_parse_response()` then tried to `.strip()` as text, crashing
-  with `AttributeError` and leaking an unawaited-coroutine
-  `RuntimeWarning`. `check()` now raises `TypeError` immediately, with
-  a message pointing the caller to `acheck()`, mirroring how `acheck()`
-  already handles a mistakenly-sync `call_fn`.
-- **`call_fn` succeeding but returning something other than a string
-  crashed instead of failing gracefully.** A `call_fn` that returns
-  `None`, a `dict`, or any other non-string value (e.g. a misconfigured
-  or mocked client) previously crashed deep inside `_parse_response()`
-  with an unhelpful `AttributeError`, rather than being treated as a
-  failed attempt the way a `call_fn` exception already was. New
-  `_call_fn_to_attempt()` helper checks the return type before parsing
-  begins: a non-string return now produces a proper failed `Attempt`
-  (`parse_ok=False`, a descriptive `error` naming the offending type)
-  and participates normally in the retry loop, in both `check()` and
-  `acheck()`.
-- **`max_retries=1.5` (or any non-int) passed validation silently, then
-  crashed far from the real mistake.** `_validate_args()` only checked
-  `max_retries >= 0`, so a float slipped through and later crashed
-  inside `range(max_retries + 1)` with a generic `TypeError` that gave
-  no indication the problem was the `max_retries` argument itself.
-  `_validate_args()` now explicitly rejects any `max_retries` that
-  isn't an `int`, raising `TypeError` immediately at the call site.
-  `bool` is deliberately still accepted (it's an `int` subclass and a
-  harmless case here — `True`/`False` just mean 1 or 0 retries) —
-  unlike the dangerous bool-as-confidence case fixed in `v0.4.4`, this
-  one was left alone on purpose.
-- **A non-string `answer` field was silently `str()`-coerced into a
-  misleading, high-confidence `ACCEPTED` result.** `_parse_response()`
-  called `str(answer)` unconditionally, so a model returning a `dict`
-  or `list` for `answer` (a schema violation, not a genuine string) was
-  silently turned into a Python `repr` — not even valid JSON — and
-  reported as a normal, trustworthy answer at whatever confidence the
-  model claimed. This is the same class of bug as the `v0.4.4` boolean-
-  confidence fix: a schema violation quietly disguised as a real
-  result instead of being rejected. A non-string `answer` is now
-  rejected before parsing succeeds, with the same discipline already
-  applied to `confidence`; `interpretations`' existing non-list-to-`[]`
-  coercion is explicitly left untouched (informational field, doesn't
-  drive status, benign default).
-- **New regression test file** (`tests/test_v048_regressions.py`)
-  covering: `booth.ACCEPTED == "ACCEPTED"` importable from both the
-  package root and `booth.core`; `VERIFIED` no longer present anywhere
-  on the module and `from booth import VERIFIED` raising `ImportError`;
-  `check()`/`check_with_evidence()`/`to_dict()` all reporting
-  `"ACCEPTED"` post-rename; `REPAIRED` still distinct from `ACCEPTED`
-  and still `ok`; `check()` rejecting both a plain async function and
-  an `async def __call__` object with `TypeError` and zero leaked
-  coroutine warnings, while a plain sync `call_fn` is unaffected; a
-  `None` or `dict` return from both `check()` and `acheck()` producing
-  a proper `UNCERTAIN` with a descriptive error instead of crashing,
-  including recovery to `REPAIRED` when a bad first attempt is followed
-  by a good retry; `max_retries=1.5` raising `TypeError`,
-  `max_retries=False` still working normally, and `max_retries=-1`
-  still correctly raising `ValueError` (not superseded by the new
-  type check); and a `dict`- or `list`-valued `answer` being rejected
-  into `UNCERTAIN` with `result.answer is None`, alongside a
-  confirmation that a genuine string `answer` still works exactly as
-  before.
-- All existing test files (`test_acheck.py`, `test_bugfixes_0_4_4.py`,
-  `test_core.py`, `test_evidence.py`, `test_method.py`, `test_parsed.py`,
-  `test_v045_regressions.py`, `test_v046_regressions.py`,
-  `test_v047_regressions.py`, `test_validator.py`) were updated in
-  place to reference `bth.ACCEPTED`/`booth.ACCEPTED` instead of the
-  removed `VERIFIED`, including test names and print messages
-  (`test_verified_first_try` → `test_accepted_first_try`, etc.) — no
-  behavioral changes in those files beyond the rename itself.
+- `numpy.bool_` recognised in `check_with_evidence()` and across numpy 1.x/2.x. Whitespace-only answers no longer reach `compare_fn`.
 
-## [v0.4.7] — bugfix batch: on_attempt async-callable detection, BoothResult.to_dict()
+## [v0.4.4] — 2026-09-01
 
-Two confirmed fixes, released together: one closes a detection gap in
-`on_attempt` handling that mirrors the `call_fn` bug fixed in `v0.4.6`
-but was never applied to the callback path, and the other adds a
-serialization convenience for `BoothResult`.
+- A boolean `confidence` is rejected (it used to become 1.0). `ambiguous: "false"` is no longer read as true. `ValidatorFn` exported. Falsy `chosen_interpretation` values kept. Validators may return `(True, None)` or a list.
 
-- **`on_attempt` async-callable detection missed the same cases
-  `call_fn` did before `v0.4.6`.** Both `check()` and `acheck()` still
-  used a bare `inspect.iscoroutinefunction(on_attempt)` check to decide
-  whether the callback needed to be awaited (`acheck()`) or rejected
-  with `TypeError` (`check()`, which only ever accepted a synchronous
-  `on_attempt`) — the same check already known to miss an object whose
-  `__call__` is itself `async def`. A callback wrapped in a class
-  (e.g. `class Logger: async def __call__(self, index, attempt): ...`,
-  a natural pattern for a rate-limited or batching logger) was silently
-  misdetected: passed to `acheck()`, it was called without being
-  awaited, producing an unawaited coroutine and a silently-skipped
-  callback instead of running correctly; passed to `check()`, it
-  slipped past the synchronous-only guard instead of raising
-  `TypeError` immediately, as documented. Both entry points now reuse
-  the `_is_async_callable()` helper introduced in `v0.4.6` for
-  `call_fn`, so `on_attempt` and `call_fn` are checked identically and
-  can no longer drift apart from each other.
-- **Added `BoothResult.to_dict()`.** `dataclasses.asdict(result)` looks
-  like the obvious way to serialize a result for logging or a message
-  queue, but `BoothResult`'s most useful fields — `ok`, `method` — are
-  computed properties, not dataclass fields, so `asdict()` silently
-  drops them. `to_dict()` returns a plain `dict` containing every
-  documented `BoothResult` field *and* every computed property, and
-  converts each `Attempt` in `attempts` via `dataclasses.asdict()` as
-  well, so a full result — including its attempt history — is
-  JSON-serializable in one call.
-- **New regression test file** (`test_v047_regressions.py`) covering:
-  an `async def __call__` object and a `functools.partial`-wrapped
-  async function both working correctly as `on_attempt` for `acheck()`;
-  the same two shapes correctly raising `TypeError` when passed as
-  `on_attempt` to `check()`; a plain synchronous `on_attempt` still
-  working on both entry points, unaffected by the detection change; and
-  `to_dict()` round-tripping through `json.dumps()` for a result from
-  each of `check()`, `acheck()`, and `check_with_evidence()`, confirming
-  `ok`, `method`, and every nested `Attempt` are present and
-  JSON-serializable.
+## [v0.4.3] — 2026-08-29
 
-## [v0.4.6] — bugfix batch: callable compatibility hardening
+- `Attempt.parsed` and `BoothResult.parsed`: the model's JSON exactly as parsed, before coercion.
 
-Two confirmed bugs in async-callable dispatch, fixed together as one
-release, themed around Python calling-convention edge cases rather than
-BOOTH's own decision logic. No new public function, parameter, or
-status. As with `v0.4.4`/`v0.4.5`, every fix here was verified against
-actual Python behavior before being written, and two related
-candidates were investigated and explicitly declined rather than
-folded in speculatively.
+## [v0.4.2] — 2026-08-26
 
-- **`acheck()` rejecting an object whose `__call__` is itself
-  `async def`.** `inspect.iscoroutinefunction(call_fn)` returns `False`
-  for a class instance implementing `async def __call__`, even though
-  calling the instance does produce a coroutine — the check only
-  recognizes the function/method itself as a coroutine function, not
-  an instance whose dunder method is one. A caller wrapping an async
-  LLM client in a class (a common pattern — e.g. a stateful or
-  rate-limited client wrapper) was incorrectly rejected with
-  `TypeError`. Fixed with a new `_is_async_callable()` helper, used in
-  place of the bare `inspect.iscoroutinefunction()` check in `acheck()`:
-  recognizes a plain `async def` function, `functools.partial` wrapping
-  one, and an object with `async def __call__`.
-- **Leaked `RuntimeWarning` when an `async def` validator is passed by
-  mistake.** `_run_validator()` already correctly rejected a coroutine
-  return value as an invalid type — the validation *contract* was never
-  broken — but the coroutine object was created and then discarded
-  without being awaited or closed, so Python emitted
-  `RuntimeWarning: coroutine '...' was never awaited` to stderr on every
-  occurrence. Fixed by detecting `inspect.iscoroutine(result)`
-  explicitly, closing it, and returning a specific, actionable message
-  ("validator must be synchronous...") instead of the generic
-  invalid-type one. Behavior (`False`, a message) is unchanged; only
-  the warning noise and message specificity changed.
-- **Two related candidates investigated and explicitly declined:**
-  - `functools.partial` wrapping an async function was suspected as a
-    possible cross-version compatibility gap (BOOTH supports Python
-    3.9–3.12). Verified directly against CPython's `inspect` source:
-    `inspect.iscoroutinefunction()` already unwraps `functools.partial`
-    internally via `functools._unwrap_partial()`, a behavior present
-    since Python 3.8 — predating BOOTH's entire supported range. No fix
-    needed; a positive regression test locks this in against a future
-    change accidentally breaking it, rather than treating it as newly
-    fixed.
-  - A callable object with a *synchronous* `__call__` that internally
-    returns an awaitable (`def __call__(self, prompt): return
-    some_coroutine`) was considered for detection. Confirmed there is
-    no signature-level way to distinguish this from an ordinary sync
-    callable without actually invoking it — which `acheck()`
-    deliberately does not do speculatively, since that would call a
-    real function just to inspect its dispatch type. Documented as
-    intentionally unsupported (Tutorial §3, §10) rather than fixed.
-- **New regression test file** (`test_v046_regressions.py`) covering,
-  as explicit pass/fail assertions rather than just static inspection:
-  plain async function, `async def __call__` object, and
-  `functools.partial(async_fn)` all working with `acheck()`; plain sync
-  function, sync `__call__` object, and `functools.partial(sync_fn)`
-  all correctly rejected; `check()`'s sync path unaffected by any of
-  the `acheck()` changes; and an `async def` validator producing a
-  clean `UNCERTAIN`/`"validation"` result with zero `RuntimeWarning`
-  emitted, verified by promoting `RuntimeWarning` to a raised exception
-  for the duration of that specific assertion.
+- `validator=` on `check()`/`acheck()`, with its own retry prompt and `method == "validation"`. `Attempt.passed_validation` and `validation_error`. GitHub Actions CI added.
 
-## [v0.4.5] — bugfix batch: check_with_evidence() boolish handling, whitespace-answer guard
+## [v0.4.1] — 2026-08-24
 
-Two confirmed bugs in `check_with_evidence()`, fixed together as one
-release. Both are behavioral fixes to existing functionality — nothing
-here adds a new public function or parameter. As with `v0.4.4`, every
-fix here was verified by writing a failing test against the actual
-behavior first, not assumed from reading the code, and a third,
-version-compatibility issue was caught only because of that same
-verification step.
+- `BoothResult.method` (`"ambiguity"`, `"evidence"`, `"parse_failure"`, `"confidence"`).
 
-- **`compare_fn` returning `numpy.bool_` not recognized as boolean.**
-  `check_with_evidence()` used a bare `isinstance(raw_result, bool)`
-  check, while `validator`'s equivalent check (`_is_boolish()`, added in
-  `v0.4.4`) already correctly widened this to also accept `numpy.bool_`.
-  A `compare_fn` written with numpy or pandas — a natural choice for
-  numeric or array-based similarity comparisons — that returned
-  `numpy.bool_(False)` fell through to the float-coercion branch
-  instead, was coerced to `0.0`, and at `evidence_threshold=0.0` could
-  resolve to `VERIFIED` instead of `BLOCKED` — a silent false-positive
-  in the exact failure mode this library exists to prevent. Fixed by
-  reusing the shared `_is_boolish()` helper in `check_with_evidence()`
-  instead of the bare `isinstance` check, so both entry points now share
-  one boolish-detection implementation instead of two independent ones
-  that could drift apart.
-- **`_is_boolish()` itself did not recognize numpy's boolean scalar type
-  across numpy versions (found while writing the regression test for
-  the fix above).** numpy 2.0 renamed the scalar boolean type, so that
-  `type(np.bool_(x)).__name__` is `"bool"` on numpy >=2.0 but was
-  `"bool_"` on numpy <2.0. The `v0.4.4` implementation of
-  `_is_boolish()` only matched the pre-2.0 name, so on current numpy
-  installs it silently failed to recognize `numpy.bool_` values at all
-  — meaning the intended `v0.4.4` widening for `validator` was already
-  not taking effect on numpy >=2.0 before this fix, in addition to the
-  bug above. `_is_boolish()` now accepts both `"bool_"` and `"bool"`
-  under the `numpy` module, verified directly against an installed
-  numpy 2.4.4 in addition to the new regression test.
-- **Whitespace-only `answer` bypassing the empty-input guard.**
-  `check_with_evidence()`'s guard was `if not answer or not evidence`,
-  which correctly catches `""` but not a whitespace-only string like
-  `" "`, since `bool(" ")` is `True` in Python. A whitespace-only answer
-  was silently passed through to the caller's `compare_fn` instead of
-  being treated as missing input. Fixed by additionally checking
-  `not answer.strip()`. Lower severity than the two bugs above — it
-  does not reopen a previously-protected failure mode, since the
-  outcome for a degenerate `" "` input was already undefined territory
-  dependent on the caller's own `compare_fn` — but a one-line fix worth
-  including in the same batch.
-- **One candidate issue considered and deliberately not fixed:**
-  `evidence` containing only blank or whitespace-only strings (e.g.
-  `evidence=[" ", ""]`) is not specially detected; only a fully empty
-  `evidence` sequence is rejected. This is structurally similar to the
-  whitespace-`answer` bug above, but `evidence` content quality is
-  explicitly the caller's documented responsibility (README, "Important:
-  What Evidence Checking Means"), unlike `answer`, which BOOTH itself
-  hands to `compare_fn` as the thing being judged. No test demonstrates
-  this as an actual failure for any caller. Treated the same way the
-  `v0.4.4` batch treated the (rejected) markdown-fence-stripping
-  suggestion: a structurally-plausible-sounding fix is not the same as
-  a confirmed bug, and speculative hardening here would exceed BOOTH's
-  stated scope rather than fix something broken.
+## [v0.4.0] — 2026-08-23
 
-## [v0.4.4] — bugfix batch: silent-coercion fixes, missing export, validator-contract widening
+- `check_with_evidence()` and the `BLOCKED` status: checks an answer against caller-supplied evidence with a caller-supplied `compare_fn`. No LLM or network calls.
 
-Six confirmed bugs, fixed together as one release. All are behavioral
-fixes to existing 0.4.x functionality — nothing here adds a new public
-function or parameter. Verified in a live Python shell before fixing
-(`bool("false") == True`, `float(True) == 1.0`), not assumed from
-inspection, and every fix has a dedicated regression test.
+## [v0.3.1] — 2026-08-23
 
-- **Confidence accepting a JSON boolean (highest severity in this
-  batch).** `float(confidence)` never raises on a Python `bool` —
-  `float(True) == 1.0` and `float(False) == 0.0` succeed silently,
-  because `bool` is a subclass of `int`. A model outputting
-  `"confidence": true` (a schema violation, not a genuine numeric
-  string like `"0.95"`) was silently accepted as a perfect 1.0
-  confidence, producing a false `VERIFIED` — the exact silent-wrong-
-  answer failure mode this library exists to prevent. Now rejected
-  explicitly, before the `float()` conversion runs, and treated as an
-  unparseable attempt like any other schema violation.
-- **`ambiguous` accepting a non-boolean string.** `bool(obj.get(
-  "ambiguous", False))` used Python's `bool()`, which treats any
-  non-empty string as `True` — a model outputting the JSON *string*
-  `"false"` (not the boolean `false`) for this field was silently
-  flipped to `ambiguous=True`. New `_coerce_ambiguous()` accepts a real
-  boolean or a literal `"true"`/`"false"` string (case-insensitive);
-  anything else rejects the attempt rather than guessing at it, the
-  same principle already applied to out-of-range confidence.
-- **`ValidatorFn` missing from the public package.** Defined in
-  `booth.core` since `v0.4.2`, but never imported into or exported from
-  `booth/__init__.py` — anyone trying to type-hint their own validator
-  function (`def my_validator(answer: str) -> ...`) couldn't import the
-  alias from the documented public interface. Now exported:
-  `from booth import ValidatorFn`.
-- **`chosen_interpretation` silently dropping falsy-but-present
-  values.** `str(chosen) if chosen else None` used a truthy check, so a
-  model returning `0` or `""` for this field — genuinely present, just
-  falsy — was silently discarded to `None` as if the field were absent.
-  Changed to `is not None`, correctly distinguishing "absent/null" from
-  "present but falsy." Lower severity than the two above since this
-  field is informational and doesn't drive any status decision, but the
-  same class of bug.
-- **`validator`'s bool check rejecting `numpy.bool_`.**
-  `isinstance(result, bool)` is not guaranteed to be `True` for
-  `numpy.bool_` across numpy versions, so a validator using numpy or
-  pandas for numeric/tabular checks could have its genuinely correct
-  pass/fail silently reinterpreted as an "invalid return type" failure.
-  New `_is_boolish()` recognizes `numpy.bool_` by module and class name
-  rather than by importing numpy — BOOTH stays zero-dependency. (Note:
-  the class-name check here only matched numpy's pre-2.0 naming; see the
-  `v0.4.5` entry above for the cross-version fix.)
-- **`validator`'s `(bool, str)` tuple check too strict for two natural
-  mistakes.** `return True, None` — a natural way to write "passed, no
-  message needed" — previously failed because the second element had
-  to be a literal `str`, not `None`. Separately, `return [False, "..."]`
-  (a list instead of a tuple, an easy habit to fall into) failed
-  `isinstance(result, tuple)` outright. Both are now accepted with the
-  identical contract as `(bool, str)`; a `False` with no message gets a
-  generic fallback message. Genuinely malformed shapes (a 3-element
-  list, a non-boolean first element) are still correctly rejected —
-  confirmed by a dedicated negative test, not just assumed from the
-  widening.
-- **Three test-coverage gaps closed**, locking in behavior that was
-  previously correct by inspection but unverified: `confidence`
-  exactly equal to `threshold` passes on both `check()` and `acheck()`
-  (the boundary is `>=`, not `>`); a model wrapping its answer as
-  `[{...}]` instead of a bare object still recovers via the existing
-  regex fallback; and the actual (previously just assumed) outcome of
-  brace-like content inside an answer field colliding with the flat
-  regex fallback during a primary-parse failure is now documented by a
-  passing test rather than left unverified.
+- Distinct retry prompt for unparseable replies; `BoothResult.all_parse_failed`.
 
-## [v0.4.3] — Attempt.parsed / result.parsed
+## [v0.3.0] — 2026-08-23
 
-- Added `parsed: Optional[dict]` to `Attempt` and `BoothResult`: the
-  model's raw JSON object exactly as parsed, before any of BOOTH's own
-  coercion (`str(answer)`, `float(confidence)`, forcing
-  `interpretations` into a list of strings, etc.). A transparency layer,
-  not a second validation layer — every accept/retry decision was
-  already made from the coerced fields by the time `parsed` is
-  populated.
-- `parsed` can legitimately disagree in representation with BOOTH's own
-  coerced fields — e.g. `parsed["confidence"]` may be the string
-  `"0.95"` while `.confidence` is the float `0.95`. That divergence is
-  the intended contract, not a bug. Any extra field a caller asks the
-  model to include alongside BOOTH's own schema survives untouched in
-  `parsed`, even though BOOTH itself never reads it.
-- `Attempt.parsed` is `None` only when that attempt failed to parse.
-  `BoothResult.parsed` mirrors the winning attempt for
-  `VERIFIED`/`REPAIRED`/`AMBIGUOUS`, the last successfully-parsed
-  attempt for `UNCERTAIN` (even if a later attempt then failed to
-  parse), and `None` only if every attempt failed to parse.
-- `check_with_evidence()` results always have `parsed=None` — there is
-  no LLM JSON parse involved on that path at all, the same reason
-  `evidence_agreement` stays `None` on `check()`/`acheck()` results.
-- Metadata-only follow-up: the PyPI package description (separate from
-  this README) was also simplified from a Path-A/Path-B-specific
-  summary to a shorter, feature-agnostic line, so it doesn't need
-  updating every time a new mechanism is added.
+- `acheck()`, the async twin of `check()`, sharing one decision step.
 
-## [v0.4.2] — validator=
+## [v0.2.0] — 2026-08-22
 
-- Added `validator=`, an optional keyword-only parameter on `check()` and
-  `acheck()`: a caller-supplied `Callable[[str], bool | tuple[bool, str]]`
-  that runs against an attempt's answer after the ambiguity check and
-  before the confidence check. A validation failure gets its own distinct
-  retry prompt (shows the specific failure reason) and reuses the existing
-  `max_retries` budget rather than adding a separate one — a successful
-  retry still reports `REPAIRED`; no new status was added.
-- `validator` never runs on an attempt that failed to parse or was flagged
-  ambiguous. An exception raised inside `validator`, or a return value
-  that isn't `bool` or `(bool, str)`, is treated as a failed validation —
-  it never propagates out of `check()`/`acheck()`.
-- `validator=None` (the default) is a true no-op: every code path this
-  parameter introduces is unreachable if it's never passed, so existing
-  calls are unaffected. `validator` is keyword-only specifically so that
-  adding it could not change the meaning of any existing positional call.
-- `Attempt` gained `passed_validation: bool` (default `True`) and
-  `validation_error: Optional[str]` (default `None`).
-- `result.method` can now be `"validation"` — an `UNCERTAIN` result where
-  the last attempt parsed fine and was confident enough, but never
-  satisfied the supplied validator. Distinct from `"parse_failure"`
-  (nothing usable was ever produced) and from `"confidence"` (the model
-  was confident and no validator was involved, or it passed).
-- Added GitHub Actions CI: the test suite now runs automatically on every
-  push and pull request, across Python 3.9–3.12.
+- Ambiguity detection and the `AMBIGUOUS` status (never retried). PyPI package renamed `boothpy`. Added TUTORIAL.md.
 
-## [v0.4.1] — result.method
+## [v0.1.0] — 2026-08-22
 
-- Added `result.method`, a read-only property on `BoothResult` derived
-  entirely from existing fields (`status`, `attempts`,
-  `all_parse_failed`) — no new stored state. Identifies which mechanism
-  actually produced a result: `"ambiguity"`, `"evidence"`,
-  `"parse_failure"`, or `"confidence"`.
-- For a mixed attempt history (e.g. a parse failure followed by a
-  low-confidence answer), `method` reflects the *last* attempt's
-  determining factor, the same rule `all_parse_failed` already follows —
-  it summarizes the final outcome, not a full per-attempt history
-  (`result.attempts` remains the source of truth for that).
+- Initial release: `check()` with self-reported confidence and a reconsideration retry.
 
-## [v0.4.0] — check_with_evidence() / Path A
-
-- Added `check_with_evidence()`: a standalone, pure, non-retrying
-  function that checks whether an `answer` agrees with caller-supplied
-  `evidence`, via a caller-supplied `compare_fn`. Makes no LLM calls, no
-  network calls, and performs no retrieval — the caller's own RAG/tool
-  pipeline owns retrieval; BOOTH only checks agreement once it's handed
-  the result.
-- `compare_fn` may return `bool` (strict pass/fail — `evidence_threshold`
-  is ignored entirely for boolean returns) or a `float` score in
-  `[0.0, 1.0]` (compared against `evidence_threshold`). An out-of-range
-  score, a non-numeric return, or an exception raised inside
-  `compare_fn` is treated as a failed comparison (`UNCERTAIN`), never
-  silently clamped and never propagated.
-- Added the `BLOCKED` status — reachable only from `check_with_evidence()`
-  (a comparison that explicitly failed), never from `check()`/`acheck()`.
-- Added `result.evidence_agreement`: the numeric comparison score, `None`
-  for ordinary `check()`/`acheck()` results.
-- `check_with_evidence()` has no relationship to a prior `check()`/
-  `acheck()` result and does not read or mutate one — composing the two
-  is left to the caller.
-
-## [v0.3.1] — parse-failure handling
-
-- Added a retry prompt distinct from the confidence-reconsideration
-  prompt for responses that failed to parse at all (no valid JSON,
-  missing keys, out-of-range confidence). Previously an unparseable
-  response silently repeated the original prompt unchanged, giving a
-  model with a stable formatting habit (markdown fences, a chatty
-  preamble) no reason to correct course on retry.
-- Added `result.all_parse_failed`: `True` only if *every* attempt failed
-  to parse, distinguishing "nothing usable was ever produced" from
-  "the model tried repeatedly but stayed under the confidence threshold"
-  — different problems, different fixes.
-
-## [v0.3.0] — acheck() / async support
-
-- Added `acheck()`, the async twin of `check()`, for callers whose model
-  client is async (`Callable[[str], Awaitable[str]]`). Passing a
-  synchronous `call_fn` to `acheck()` (or an async `on_attempt` to
-  `check()`) raises `TypeError` immediately rather than misbehaving
-  silently.
-- Internally refactored the accept/retry decision into a single shared
-  `_evaluate()` step called identically by both `check()` and `acheck()`,
-  so the two can't drift apart as future changes are made.
-- Documented that both functions are stateless (no shared/module-level
-  mutable state), so concurrent calls — many simultaneous users — don't
-  interfere with each other.
-
-## [v0.2.0]
-
-- Added ambiguity detection: the model is asked to report `ambiguous`
-  and `interpretations` *before* `answer` in the requested JSON schema.
-  Because JSON is generated token-by-token left to right, this forces a
-  real ambiguity judgment before the answer text is generated, not a
-  self-audit added after the fact.
-- Added the `AMBIGUOUS` status: returned immediately, regardless of
-  confidence, and never retried — a question that's ambiguous as asked
-  isn't fixed by asking the model to reconsider.
-- Renamed the PyPI package to `boothpy` (the name `booth` was rejected by
-  PyPI as disallowed).
-- Added `TUTORIAL.md`.
-
-## [v0.1.0]
-
-- Initial release. `check()`: wraps an LLM call, requests a self-reported
-  confidence score, and retries with a genuine reconsideration prompt
-  (not blind resampling) when confidence is below a configurable
-  threshold. `VERIFIED` / `REPAIRED` / `UNCERTAIN` statuses.
-
-[Unreleased]: https://github.com/Vedantgitbot/booth/compare/v0.5.9...HEAD
-
+[Unreleased]: https://github.com/Vedantgitbot/booth/compare/v0.6.0...HEAD
+[v0.6.0]: https://github.com/Vedantgitbot/booth/releases/tag/v0.6.0
 [v0.5.9]: https://github.com/Vedantgitbot/booth/releases/tag/v0.5.9
 [v0.5.8]: https://github.com/Vedantgitbot/booth/releases/tag/v0.5.8
 [v0.5.7]: https://github.com/Vedantgitbot/booth/releases/tag/v0.5.7

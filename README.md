@@ -70,7 +70,15 @@ else:
 
 An accepted result means the configured checks passed. It does not prove that the answer is factually correct.
 
-BOOTH asks the model for a JSON-only reply. On reasoning-heavy tasks, small local models can lose accuracy because of that, so measure against a plain call on your own model first. See [Troubleshooting entry 10](https://github.com/Vedantgitbot/booth/blob/main/TROUBLESHOOTING.md#10-accuracy-drops-on-reasoning-heavy-tasks-maths-multi-step-questions) and the [latency and accuracy benchmark](https://github.com/Vedantgitbot/booth/tree/main/examples/Vedantgitbot_latency_accuracy).
+### Reasoning-heavy tasks
+
+By default BOOTH asks for a JSON-only reply, which keeps output short and easy to parse. For maths and multi-step questions, give the model room to think first (v0.6.0+):
+
+```python
+result = booth.check(call_llm, "A train leaves at 3:15 ...", suffix=booth.REASONING_SUFFIX)
+```
+
+`suffix=` replaces the whole output instruction, so you can also supply your own. See [Troubleshooting entry 10](https://github.com/Vedantgitbot/booth/blob/main/TROUBLESHOOTING.md#10-accuracy-drops-on-reasoning-heavy-tasks-maths-multi-step-questions) and the [latency and accuracy benchmark](https://github.com/Vedantgitbot/booth/tree/main/examples/Vedantgitbot_latency_accuracy).
 
 ### Provider-native response formats
 
@@ -91,10 +99,26 @@ result = booth.check(
 A few things to know:
 
 - `call_fn` must still return a `str`. A non-`str` return is a call failure and never reaches `parse_fn`.
-- `parse_fn` changes how the response is parsed, not what the model is asked. BOOTH still appends its JSON instructions to your prompt, and a failed parse gets the same JSON-style retry prompt as any other parse failure. If that does not suit your format, use `max_retries=0` and retry in your own code.
+- `parse_fn` changes how the response is parsed, not what the model is asked. Pair it with `suffix=` to change the instructions BOOTH appends. With the default suffix, a failed parse gets the standard JSON-style retry prompt; with a custom suffix, the retry repeats your suffix. To handle retries yourself, use `max_retries=0`.
 - A parser exception or a `None` result is a parse failure, not a call failure.
 
 See [Tutorial §3.7](https://github.com/Vedantgitbot/booth/blob/main/TUTORIAL.md).
+
+---
+
+## 📈 What the benchmarks show
+
+Every example in the repo records a real run. The headline results so far:
+
+| What was tested | Result | Details |
+| :--- | :--- | :--- |
+| Evidence check on a refund policy | Blocked a fabricated `"90 days"` against a 45-day policy and accepted `"45 days"`. | [Examples](https://github.com/Vedantgitbot/booth/tree/main/examples) |
+| Numeric validation (arithmetic answers) | Caught a wrong currency amount (2.225 USD) that the model stated at confidence 1.0 and that plain `check()` accepted. | [Numeric comparison](https://github.com/Vedantgitbot/booth/tree/main/examples/camerontjs-dot_numeric_comparison) |
+| Comparator choice | An NLI comparator matched the authored expectations in 9/10 cases, a keyword matcher in 4/10. | [Comparator comparison](https://github.com/Vedantgitbot/booth/tree/main/examples/camerontjs-dot_compare_fn) |
+| Room to reason (Qwen 7B, GSM8K) | 97.5% plain, 35.0% under the JSON-only prompt, 92.5% with room to reason. `suffix=REASONING_SUFFIX` gives that room in one argument. | [Latency and accuracy](https://github.com/Vedantgitbot/booth/tree/main/examples/Vedantgitbot_latency_accuracy) |
+| BOOTH's own test suite | 527 tests. In a [qikly](https://github.com/gal-a/qikly) mutation run on v0.5.9, 23 of 25 sampled planted faults were caught. | [Tests](https://github.com/Vedantgitbot/booth/tree/main/tests) |
+
+These are small, documented runs, not accuracy guarantees. Each example's `RESULTS.md` has the setup and the full numbers.
 
 ---
 
@@ -173,7 +197,7 @@ BOOTH provides three primary APIs:
 
 | Function | Execution | Purpose |
 | :--- | :--- | :--- |
-| `booth.check()` | Synchronous | Evaluates model responses for parsing, ambiguity, confidence, and an optional custom validator. Accepts an optional `parse_fn` for provider-native response formats. Retries with reconsideration when appropriate. |
+| `booth.check()` | Synchronous | Evaluates model responses for parsing, ambiguity, confidence, and an optional custom validator. Accepts an optional `parse_fn` for provider-native response formats and an optional `suffix=` to change the output instructions. Retries with reconsideration when appropriate. |
 | `booth.check_with_evidence()` | Synchronous | Evaluates a supplied answer against application-provided evidence using your comparator. Does not call an LLM itself. |
 | `booth.acheck()` | Asynchronous | Async equivalent of `check()`, supporting async model callables and async execution loops. |
 
@@ -264,18 +288,18 @@ These examples cover:
 - Groq: evidence-grounded refund-policy QA and hallucination blocking.
 - Google Gemini: ambiguity detection, evidence grounding, and an integration issue where failed API calls initially looked like an unsure model. These can now be distinguished with `result.call_failed`.
 - Anthropic: evidence-grounded refund-policy QA against Claude.
-- Ollama: local-model checks, async execution, evidence checks, both useful and misleading self-reported confidence, and a default-format versus JSON-schema comparison on a 3B model, where schema-constrained output parsed every time but one wrong answer was still accepted.
+- Ollama: local-model checks, async execution, evidence checks, how self-reported confidence behaves on small models, and a default-format versus JSON-schema comparison on a 3B model, where schema-constrained output parsed every time. One wrong answer still passed the confidence gate, which is the case evidence checks are for.
 
 ### RAG and comparator studies
 
 | Example | Stack or comparator | Finding |
 | :--- | :--- | :--- |
-| Local RAG pipeline | LangChain, FAISS, FLAN-T5, and `cross-encoder/nli-deberta-v3-base` | The comparator blocked the wrong answer, but also blocked two correct answers. |
-| Comparator comparison | Keyword matcher vs. `MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli` | On the same 10 authored cases, the comparators matched expectations in 4/10 and 9/10 cases, respectively. A conflicting-evidence case still received `ACCEPTED`. |
+| Local RAG pipeline | LangChain, FAISS, FLAN-T5, and `cross-encoder/nli-deberta-v3-base` | The comparator blocked the wrong answer. It also blocked two correct ones, a useful example of tuning a comparator. |
+| Comparator comparison | Keyword matcher vs. `MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli` | On the same 10 authored cases, the comparators matched expectations in 4/10 and 9/10 cases, respectively. One conflicting-evidence case is kept in the write-up as a known limit. |
 
 These are documented example results, not a general accuracy guarantee.
 
-Each example's `RESULTS.md` records what happened: what worked, what failed, and what was surprising. Negative results are intentional. A confidently wrong result from `check()` alone is as useful to document as a clean pass.
+Each example's `RESULTS.md` records what happened: what worked, what didn't, and what was surprising. Including the cases where a check alone wasn't enough shows where each BOOTH feature earns its place.
 
 To contribute an integration, see the [open call for provider examples](https://github.com/Vedantgitbot/booth/issues/2). Any provider, any model, PRs welcome.
 
