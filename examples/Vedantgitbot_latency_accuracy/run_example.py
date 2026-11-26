@@ -79,17 +79,20 @@ def extract_json_object(text):
 class Provider:
     """Ollama over plain HTTP (stdlib). Counts every call it makes."""
 
-    def __init__(self, host, model, temperature, seed, num_predict, timeout):
+    def __init__(self, host, model, temperature, seed, num_predict, timeout, think=None):
         self.host = host.rstrip("/")
         self.model = model
         self.options = {"temperature": temperature, "seed": seed, "num_predict": num_predict}
         self.timeout = timeout
+        # None = don't send "think" (the model's own default); True/False = force it.
+        self.think = think
         self.reset()
 
     def reset(self):
         self.calls = 0
         self.failed_calls = 0
         self.out_tokens = 0
+        self.truncated_calls = 0  # replies that stopped at num_predict (done_reason == "length")
 
     def _post(self, path, payload, timeout):
         req = urllib.request.Request(
@@ -107,19 +110,20 @@ class Provider:
     def __call__(self, prompt):
         """call_model(prompt) -> str. Raises on failure (BOOTH records it)."""
         self.calls += 1
+        payload = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": False,
+            "keep_alive": "60m",
+            "options": self.options,
+        }
+        if self.think is not None:
+            payload["think"] = self.think
         try:
-            data = self._post(
-                "/api/chat",
-                {
-                    "model": self.model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "stream": False,
-                    "keep_alive": "60m",
-                    "options": self.options,
-                },
-                self.timeout,
-            )
+            data = self._post("/api/chat", payload, self.timeout)
             self.out_tokens += int(data.get("eval_count") or 0)
+            if data.get("done_reason") == "length":
+                self.truncated_calls += 1
             return data["message"]["content"]
         except Exception:
             self.failed_calls += 1
@@ -330,9 +334,12 @@ def run_arm(arm, q, provider):
         # booth_reason uses the shipped suffix= option (BOOTH >= 0.6.0); no wrapper needed.
         extra = {"suffix": booth.REASONING_SUFFIX} if arm == "booth_reason" else {}
         res = booth.check(provider, q["base"], max_retries=booth.DEFAULT_MAX_RETRIES, **extra)
+        last = res.attempts[-1] if res.attempts else None
         rec.update(status=res.status, confidence=res.confidence, predicted=res.answer,
                    n_attempts=res.n_attempts,
-                   raw_correct=grade(q, res.answer) if res.answer is not None else False)
+                   raw_correct=grade(q, res.answer) if res.answer is not None else False,
+                   interpretations=res.interpretations,
+                   chosen_interpretation=last.chosen_interpretation if last else None)
         if res.call_failed:
             rec["outcome"] = "call_failed"
             rec["error"] = (res.attempts[-1].raw_text or "")[:200]
@@ -345,6 +352,7 @@ def run_arm(arm, q, provider):
     rec["latency_s"] = time.perf_counter() - t0
     rec["model_calls"] = provider.calls
     rec["failed_calls"] = provider.failed_calls
+    rec["truncated_calls"] = provider.truncated_calls
     rec["out_tokens"] = provider.out_tokens
     return rec
 
@@ -537,7 +545,10 @@ def main():
     ap.add_argument("--model", default="qwen2.5:7b-instruct")
     ap.add_argument("--host", default=os.environ.get("OLLAMA_HOST", "http://localhost:11434"))
     ap.add_argument("--temperature", type=float, default=0.0)
-    ap.add_argument("--num-predict", type=int, default=1024, help="max output tokens per call")
+    ap.add_argument("--num-predict", type=int, default=1024,
+                    help="max output tokens per call (thinking tokens count toward it; raise it for thinking models)")
+    ap.add_argument("--think", choices=["on", "off"], default=None,
+                    help="force Ollama thinking on/off; omitted = the model's default")
     ap.add_argument("--timeout", type=float, default=300, help="per-call timeout (s)")
     ap.add_argument("--out", default=str(HERE / "output"))
     ap.add_argument("--resume", action="store_true", help="continue an interrupted run")
@@ -555,7 +566,8 @@ def main():
 
     # ---- setup (not counted as benchmark time) -------------------------
     t_setup = time.perf_counter()
-    prov = Provider(args.host, args.model, args.temperature, args.seed, args.num_predict, args.timeout)
+    think = None if args.think is None else args.think == "on"
+    prov = Provider(args.host, args.model, args.temperature, args.seed, args.num_predict, args.timeout, think)
     try:
         ollama_version = prov.get("/api/version").get("version", "unknown")
         tags = prov.get("/api/tags")["models"]
@@ -594,6 +606,7 @@ def main():
             ("Provider / Model", f"Ollama {ollama_version} / `{args.model}`"),
             ("Model digest", f"`{digest}`"),
             ("Temperature / Seed", f"{args.temperature} / {args.seed} (num_predict={args.num_predict}, timeout={args.timeout:g}s per call)"),
+            ("Thinking", "model default (not sent)" if think is None else ("on" if think else "off")),
             ("Dataset versions", "Hugging Face datasets-server, current `main` at run time (" + time.strftime("%Y-%m-%d") + "); see Datasets below"),
             ("Questions / Repetitions", f"{args.n} / {args.reps}"),
             ("Hardware", f"CPU: {hw['cpu']} ({hw['threads']} threads); RAM: {hw['ram']}; GPU: {hw['gpu']}; Ollama placement: {placement}"),
