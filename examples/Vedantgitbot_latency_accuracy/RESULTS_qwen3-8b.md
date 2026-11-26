@@ -3,11 +3,24 @@
 I ran the four-arm benchmark unchanged with `qwen3:8b` using local Ollama on Windows (model 100% on GPU), against BOOTH 0.6.0 from this repository's `src/`. Command: `python run_example.py --model qwen3:8b` (100 questions, 1 repetition, seed 42, temperature 0), after a passing `--smoke` run. Questions were fetched from the Hugging Face datasets-server; no dataset fallback occurred. Raw per-arm records: `results_qwen3-8b.jsonl`. Discussion is in issue #46.
 
 **Read this first:**
-- **Thinking was on.** Ollama enables it by default for `qwen3:8b`, and this run did not set it. Thinking tokens count toward `num_predict=1024` but are stripped from the reply, so some replies were cut off. That accounts for all 21 wrong plain answers that hit the cap (accuracy on the other 79 was 82%), all 25 `PARSE_FAILED` rows in the no-gate arm, and all 11 `UNCERTAIN` rows in the BOOTH default arm. No AMBIGUOUS row in the BOOTH default arm was truncated.
+- **Thinking was on.** Ollama enables it by default for `qwen3:8b`, and this run did not set it. Thinking tokens count toward `num_predict=1024` but are stripped from the reply, so some replies were cut off. That accounts for all 21 wrong plain answers that hit the cap (accuracy on the other 79 was 82%), all 25 `PARSE_FAILED` rows in the no-gate arm, and all 11 `UNCERTAIN` rows in the BOOTH default arm. See the table below.
 - **The AMBIGUOUS gate rejected many correct answers on TruthfulQA.** In the BOOTH default arm, 15 of 30 TruthfulQA questions were rejected as AMBIGUOUS, and 11 of those answers were correct.
 - **Results vary between runs.** Even at temperature 0 with a fixed seed, repeated runs of this model give different results, so a single run like this one is not a precise measurement. The spread across repetitions is reported in issue #46.
 
-This run predates the `truncated_calls` and `interpretations` fields, so its records don't have them. Truncation was inferred from `out_tokens` reaching `num_predict` on every call. Results from 100 questions, one model and one seed are illustrative and are not a general performance claim.
+## Replies that hit the token cap
+
+This run predates the `truncated_calls` field, so the counts are inferred from each row's `out_tokens` and `model_calls`. A reply that hits the cap uses exactly `num_predict` = 1024 tokens. A count is exact when a row used exactly 1024 tokens per call. For BOOTH rows with two calls and between 1024 and 2047 tokens, the records can't tell whether one reply was cut off or neither was, so those arms get a range.
+
+| Arm | Model calls | Replies at the cap | Questions where every reply hit the cap | What those questions ended as |
+|---|---|---|---|---|
+| Plain model | 100 | 21 | 21 | all graded wrong (no answer extracted) |
+| BOOTH prompt, no gate | 100 | 25 | 25 | all 25 `PARSE_FAILED` |
+| BOOTH (default) | 124 | 22–35 | 11 | all 11 `UNCERTAIN` |
+| BOOTH + reasoning room | 126 | 26–39 | 13 | 12 `UNCERTAIN`, 1 `AMBIGUOUS` |
+
+The 13 two-call BOOTH (default) questions that aren't fully capped used 1433–2037 output tokens. They probably had a first reply cut off and a usable retry: 8 ended `REPAIRED` and 5 `AMBIGUOUS`. In those 5 AMBIGUOUS rows, the AMBIGUOUS result came from the retry, not the first reply. The other 18 AMBIGUOUS rows in that arm were single-call, with no reply at the cap. In the reasoning arm, the same pattern is 13 questions: 8 `REPAIRED`, 5 `AMBIGUOUS`.
+
+This run also predates the `interpretations` field. Results from 100 questions, one model and one seed are illustrative and are not a general performance claim.
 
 Everything below the line is `output/summary.md` from the run, unedited apart from replacing the local path on the BOOTH version line.
 
