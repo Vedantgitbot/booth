@@ -5,7 +5,7 @@ Four arms, run on the same questions:
   plain         the model, asked directly, free to reason, "Final answer:" extraction
   json_nogate   BOOTH's exact prompt (question + its JSON suffix), NO checking
   booth_def     booth.check() with default settings
-  booth_reason  booth.check(), but the model may reason before the JSON
+  booth_reason  booth.check(suffix=booth.REASONING_SUFFIX): the model may reason before the JSON
 
 Reading the results:
   json_nogate low, plain high      -> the prompt hurts, not the gate
@@ -41,7 +41,12 @@ try:
 except ImportError:
     sys.path.insert(0, str(HERE.parents[1] / "src"))
     import booth
-from booth import core
+
+# suffix= and REASONING_SUFFIX arrived in BOOTH 0.6.0. An older installed copy
+# would otherwise fail halfway through the run.
+if not hasattr(booth, "REASONING_SUFFIX"):
+    sys.exit(f"This example needs BOOTH >= 0.6.0 (found {getattr(booth, '__version__', 'unknown')}). "
+             "Run: pip install -U boothpy")
 
 ARMS = ["plain", "json_nogate", "booth_def", "booth_reason"]
 ARM_LABELS = {
@@ -62,37 +67,10 @@ DATASETS = [
 # Used only if the primary TruthfulQA-MC source cannot be read.
 TRUTHFULQA_FALLBACK = ("truthfulqa/truthful_qa", "multiple_choice", "validation")
 
-# --------------------------------------------------------------------------
-# Reasoning-friendly suffix, derived from BOOTH's own suffix at import time so
-# the schema stays identical. Only the "JSON only" instruction is replaced.
-# --------------------------------------------------------------------------
-_JSON_ONLY = "Output ONLY the JSON object, nothing else."
-_REASON_INSTR = ("First think the problem through step by step in plain text. Then, as the LAST "
-                 "thing in your reply, output the JSON object described above.")
-if _JSON_ONLY not in core._CONFIDENCE_SUFFIX:
-    sys.exit("core._CONFIDENCE_SUFFIX changed; update _JSON_ONLY in this script.")
-REASON_SUFFIX = core._CONFIDENCE_SUFFIX.replace(_JSON_ONLY, _REASON_INSTR)
-
-
 def extract_json_object(text):
     """Outermost {...} span, tolerating code fences and leading prose."""
     i, j = text.find("{"), text.rfind("}")
     return text[i:j + 1] if i != -1 and j > i else text
-
-
-class ReasonFirst:
-    """call_fn wrapper for the booth_reason arm: swap BOOTH's suffix for the
-    reasoning-friendly one, then hand BOOTH only the final JSON object."""
-
-    def __init__(self, prov):
-        self.prov = prov
-
-    def __call__(self, prompt):
-        if core._CONFIDENCE_SUFFIX not in prompt:
-            raise RuntimeError("BOOTH suffix not found in prompt; suffix swap did not apply")
-        text = self.prov(prompt.replace(core._CONFIDENCE_SUFFIX, REASON_SUFFIX))
-        i = text.rfind("{")  # schema has no nested objects: last '{' starts the answer JSON
-        return text[i:] if i != -1 else text
 
 
 # --------------------------------------------------------------------------
@@ -335,7 +313,7 @@ def run_arm(arm, q, provider):
     elif arm == "json_nogate":
         # BOOTH's exact prompt, one call, no confidence gate, no retries.
         try:
-            text = provider(q["base"] + core._CONFIDENCE_SUFFIX)
+            text = provider(q["base"] + booth.DEFAULT_SUFFIX)
         except Exception as e:
             rec.update(status="CALL_FAILED", error=f"{type(e).__name__}: {e}"[:200], outcome="call_failed")
         else:
@@ -349,8 +327,9 @@ def run_arm(arm, q, provider):
                 rec.update(status="PARSE_FAILED", error=f"{type(e).__name__}: {e}"[:200],
                            raw_correct=False, outcome="no_answer")
     else:  # booth_def / booth_reason
-        fn = ReasonFirst(provider) if arm == "booth_reason" else provider
-        res = booth.check(fn, q["base"], max_retries=booth.DEFAULT_MAX_RETRIES)
+        # booth_reason uses the shipped suffix= option (BOOTH >= 0.6.0); no wrapper needed.
+        extra = {"suffix": booth.REASONING_SUFFIX} if arm == "booth_reason" else {}
+        res = booth.check(provider, q["base"], max_retries=booth.DEFAULT_MAX_RETRIES, **extra)
         rec.update(status=res.status, confidence=res.confidence, predicted=res.answer,
                    n_attempts=res.n_attempts,
                    raw_correct=grade(q, res.answer) if res.answer is not None else False)
@@ -412,13 +391,9 @@ def hardware():
 
 
 def booth_version():
-    for dist in ("boothpy", "booth"):
-        try:
-            from importlib.metadata import version
-            return f"{dist} {version(dist)}"
-        except Exception:
-            pass
-    return f"{getattr(booth, '__version__', 'unknown')} (loaded from {Path(booth.__file__).parent})"
+    # Report the code that is actually imported. Package metadata can be stale
+    # (for example an editable install made at an older version).
+    return f"boothpy {getattr(booth, '__version__', 'unknown')} (loaded from {Path(booth.__file__).parent})"
 
 
 # --------------------------------------------------------------------------
@@ -450,7 +425,8 @@ def arm_stats(recs, n_per_rep):
 
 
 def table_header(first, arms):
-    return "| " + first + " | " + " | ".join(ARM_LABELS[a] for a in arms) + " |\n|---|" + "---|" * len(arms)
+    lead = first.count("|") + 1  # number of leading columns in `first`
+    return "| " + first + " | " + " | ".join(ARM_LABELS[a] for a in arms) + " |\n|" + "---|" * (lead + len(arms))
 
 
 def build_summary(cfg, questions, sources, records):
@@ -470,8 +446,8 @@ def build_summary(cfg, questions, sources, records):
     w("- **BOOTH prompt, no gate**: the question + BOOTH's exact JSON suffix, one call, no confidence "
       "check and no retries. Isolates the effect of the prompt from the effect of the gate.")
     w("- **BOOTH (default)**: `booth.check()` with default settings.")
-    w("- **BOOTH + reasoning room**: `booth.check()` with BOOTH's suffix swapped (via `call_fn`) for one "
-      "that lets the model reason before the JSON; same schema.")
+    w("- **BOOTH + reasoning room**: `booth.check(suffix=booth.REASONING_SUFFIX)`, which lets the model "
+      "reason before the JSON; same schema.")
     w("\n## Benchmark comparison\n")
     w(f"Pooled over {len(reps)} repetition(s) x {len(questions)} questions = {len(questions) * len(reps)} "
       "graded question-runs per arm. Accuracy denominator is ALL question-runs: rejected "
