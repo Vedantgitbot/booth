@@ -5,6 +5,7 @@ I ran the four-arm benchmark unchanged with `qwen3:8b` using local Ollama on Win
 **Read this first:**
 - **Thinking was on.** Ollama enables it by default for `qwen3:8b`, and this run did not set it. Thinking tokens count toward `num_predict=1024` but are stripped from the reply, so some replies were cut off. That accounts for all 21 wrong plain answers that hit the cap (accuracy on the other 79 was 82%), all 25 `PARSE_FAILED` rows in the no-gate arm, and all 11 `UNCERTAIN` rows in the BOOTH default arm. See the table below.
 - **The AMBIGUOUS gate rejected many correct answers on TruthfulQA.** In the BOOTH default arm, 15 of 30 TruthfulQA questions were rejected as AMBIGUOUS, and 11 of those answers were correct.
+- **The reasoning arm used the old wrapper.** In this run, `booth_reason` used the earlier `call_fn` wrapper, which swapped a "think first" sentence into BOOTH's suffix. It did not use `booth.REASONING_SUFFIX`, so its numbers aren't directly comparable with runs from the updated script.
 - **Results vary between runs.** Even at temperature 0 with a fixed seed, repeated runs of this model give different results, so a single run like this one is not a precise measurement. The spread across repetitions is reported in issue #46.
 
 ## Replies that hit the token cap
